@@ -1,0 +1,31 @@
+name: apple_style_phonebook
+description: Apple HIG-styled phonebook for Android
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  sqflite: ^2.3.3
+  path: ^1.9.0
+  path_provider: ^2.1.4
+  permission_handler: ^11.3.1
+  phone_state: ^3.1.0
+  record: ^5.1.2
+  audioplayers: ^6.1.0
+  csv: ^6.0.0
+  pdf: ^3.11.1
+  printing: ^5.13.3
+  archive: ^3.6.1
+  share_plus: ^10.0.2
+  file_picker: ^8.1.2
+  intl: ^0.19.0
+  contacts_service: ^0.6.3
+  uuid: ^4.5.1
+
+flutter:
+  uses-material-design: true
