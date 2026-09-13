@@ -1,7 +1,15 @@
 import 'dart:io';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
+
+/// Native trim channel. ffmpeg_kit_flutter was retired in April 2025
+/// (binaries pulled from every registry), so trimming is done with a
+/// small native Android MediaExtractor/MediaMuxer implementation
+/// instead of a third-party FFmpeg wrapper — see
+/// android/app/src/main/kotlin/.../MainActivity.kt.
+const MethodChannel _trimChannel = MethodChannel('phonebook/audio_trim');
 
 /// Records microphone audio during a call. This is mic-only recording:
 /// it relies on the other party's voice leaking into the mic through
@@ -80,5 +88,30 @@ class AudioRecordingService {
     if (await file.exists()) {
       await file.delete();
     }
+  }
+
+  /// Trims an m4a/AAC recording between [startMs] and [endMs] using
+  /// native MediaExtractor/MediaMuxer (container-level cut, no
+  /// re-encoding). Returns the new file's path.
+  Future<String> trimRecording({
+    required String sourcePath,
+    required int startMs,
+    required int endMs,
+  }) async {
+    final dir = p.dirname(sourcePath);
+    final base = p.basenameWithoutExtension(sourcePath);
+    final outputPath = p.join(dir, '${base}_trimmed_${DateTime.now().millisecondsSinceEpoch}.m4a');
+
+    final result = await _trimChannel.invokeMethod<String>('trim', {
+      'sourcePath': sourcePath,
+      'outputPath': outputPath,
+      'startMs': startMs,
+      'endMs': endMs,
+    });
+
+    if (result == null) {
+      throw StateError('Native trim returned no output path');
+    }
+    return result;
   }
 }
