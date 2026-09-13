@@ -75,7 +75,12 @@ class ContactAvatar extends StatelessWidget {
 /// and a floating add button — mirrors the stock iOS Contacts app.
 /// =====================================================================
 class ContactsListScreen extends StatefulWidget {
-  const ContactsListScreen({super.key});
+  /// Optional hook for a "More" entry point (Activity Log,
+  /// Backup/Restore, vCard import/export). Passed in by AppShell to
+  /// avoid a circular import between this file and app_shell.dart.
+  final VoidCallback? onMoreTap;
+
+  const ContactsListScreen({super.key, this.onMoreTap});
 
   @override
   State<ContactsListScreen> createState() => _ContactsListScreenState();
@@ -150,6 +155,13 @@ class _ContactsListScreenState extends State<ContactsListScreen> {
       backgroundColor: AppColors.groupedBackground,
       navigationBar: CupertinoNavigationBar(
         middle: const Text('Contacts'),
+        leading: widget.onMoreTap == null
+            ? null
+            : CupertinoButton(
+                padding: EdgeInsets.zero,
+                onPressed: widget.onMoreTap,
+                child: const Icon(CupertinoIcons.gear_alt),
+              ),
         trailing: CupertinoButton(
           padding: EdgeInsets.zero,
           onPressed: _openAddContact,
