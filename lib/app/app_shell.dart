@@ -23,14 +23,8 @@ class AppShell extends StatelessWidget {
         activeColor: AppColors.systemBlue,
         inactiveColor: AppColors.systemGray,
         items: const [
-          BottomNavigationBarItem(
-            icon: Icon(CupertinoIcons.phone),
-            label: 'Calls',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(CupertinoIcons.person_2),
-            label: 'Contacts',
-          ),
+          BottomNavigationBarItem(icon: Icon(CupertinoIcons.phone), label: 'Calls'),
+          BottomNavigationBarItem(icon: Icon(CupertinoIcons.person_2), label: 'Contacts'),
         ],
       ),
       tabBuilder: (context, index) {
@@ -54,8 +48,6 @@ class AppShell extends StatelessWidget {
 
 /// =====================================================================
 /// SCREEN: MoreScreen
-/// Reached from the gear icon on the Contacts tab. Houses everything
-/// that isn't a primary tab: Activity Log, export/import, backup.
 /// =====================================================================
 class MoreScreen extends StatefulWidget {
   const MoreScreen({super.key});
@@ -68,7 +60,28 @@ class _MoreScreenState extends State<MoreScreen> {
   final _dataService = DataManagementService();
   bool _busy = false;
 
-  Future<void> _run(Future<void> Function() action, {String? confirmTitle, String? confirmBody}) async {
+  Future<void> _showResult(String title, String message) async {
+    if (!mounted) return;
+    await showCupertinoDialog(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [CupertinoDialogAction(child: const Text('OK'), onPressed: () => Navigator.pop(ctx))],
+      ),
+    );
+  }
+
+  /// [action] now returns the success message to show — fix for
+  /// #12/#13, which previously ran these operations with no feedback
+  /// at all, success or failure. Exceptions thrown by the service
+  /// layer (see data_management_service.dart's new validity checks)
+  /// are now caught here and shown instead of crashing or vanishing.
+  Future<void> _run(
+    Future<String> Function() action, {
+    String? confirmTitle,
+    String? confirmBody,
+  }) async {
     if (confirmTitle != null) {
       final confirmed = await showCupertinoDialog<bool>(
         context: context,
@@ -90,7 +103,10 @@ class _MoreScreenState extends State<MoreScreen> {
 
     setState(() => _busy = true);
     try {
-      await action();
+      final message = await action();
+      await _showResult('Success', message);
+    } catch (e) {
+      await _showResult('Failed', e.toString());
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -122,12 +138,22 @@ class _MoreScreenState extends State<MoreScreen> {
                 _MoreRow(
                   icon: CupertinoIcons.square_arrow_up,
                   label: 'Export Contacts (.vcf)',
-                  onTap: () => _run(() => _dataService.exportVCard()),
+                  onTap: () => _run(() async {
+                    await _dataService.exportVCard();
+                    return 'Contacts exported and ready to share.';
+                  }),
                 ),
                 _MoreRow(
                   icon: CupertinoIcons.square_arrow_down,
                   label: 'Import Contacts (.vcf)',
-                  onTap: () => _run(() => _dataService.importVCardFromFile()),
+                  onTap: () => _run(() async {
+                    final result = await _dataService.importVCardFromFile();
+                    if (result.imported == 0 && result.skippedDuplicates == 0) {
+                      return 'No file selected.';
+                    }
+                    return 'Imported ${result.imported} contact(s). '
+                        'Skipped ${result.skippedDuplicates} duplicate(s).';
+                  }),
                 ),
               ],
             ),
@@ -137,23 +163,30 @@ class _MoreScreenState extends State<MoreScreen> {
                 _MoreRow(
                   icon: CupertinoIcons.cloud_upload,
                   label: 'Backup App Data',
-                  onTap: () => _run(() => _dataService.createBackup()),
+                  onTap: () => _run(() async {
+                    await _dataService.createBackup();
+                    return 'Backup created and ready to share.';
+                  }),
                 ),
                 _MoreRow(
                   icon: CupertinoIcons.cloud_download,
                   label: 'Restore from Backup',
                   onTap: () => _run(
-                    () => _dataService.restoreBackup(),
+                    () async {
+                      final ok = await _dataService.restoreBackup();
+                      return ok ? 'Restore complete.' : 'No file selected.';
+                    },
                     confirmTitle: 'Restore Backup?',
                     confirmBody: 'This replaces all current contacts and recordings.',
                   ),
                 ),
               ],
             ),
-            if (_busy) const Padding(
-              padding: EdgeInsets.only(top: 24),
-              child: Center(child: CupertinoActivityIndicator()),
-            ),
+            if (_busy)
+              const Padding(
+                padding: EdgeInsets.only(top: 24),
+                child: Center(child: CupertinoActivityIndicator()),
+              ),
           ],
         ),
       ),
@@ -168,10 +201,7 @@ class _MoreCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: BoxDecoration(
-        color: AppColors.cardBackground,
-        borderRadius: BorderRadius.circular(10),
-      ),
+      decoration: BoxDecoration(color: AppColors.cardBackground, borderRadius: BorderRadius.circular(10)),
       child: Column(children: children),
     );
   }
