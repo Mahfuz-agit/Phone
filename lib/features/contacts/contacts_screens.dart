@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/theme/app_theme.dart';
 import '../../core/models/contact_model.dart';
@@ -379,6 +380,56 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
     }
   }
 
+  Future<void> _showNoInfoDialog(String what) async {
+    if (!mounted) return;
+    await showCupertinoDialog(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text('No $what'),
+        content: Text('This contact has no $what saved.'),
+        actions: [
+          CupertinoDialogAction(child: const Text('OK'), onPressed: () => Navigator.pop(ctx)),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _launch(Uri uri, {required String missingLabel}) async {
+    final ok = await canLaunchUrl(uri);
+    if (!ok) {
+      await _showNoInfoDialog(missingLabel);
+      return;
+    }
+    await launchUrl(uri);
+  }
+
+  Future<void> _call() async {
+    final contact = _contact;
+    if (contact == null || contact.phones.isEmpty) {
+      await _showNoInfoDialog('phone number');
+      return;
+    }
+    await _launch(Uri(scheme: 'tel', path: contact.phones.first.number), missingLabel: 'phone number');
+  }
+
+  Future<void> _message() async {
+    final contact = _contact;
+    if (contact == null || contact.phones.isEmpty) {
+      await _showNoInfoDialog('phone number');
+      return;
+    }
+    await _launch(Uri(scheme: 'sms', path: contact.phones.first.number), missingLabel: 'phone number');
+  }
+
+  Future<void> _mail() async {
+    final contact = _contact;
+    if (contact == null || contact.emails.isEmpty) {
+      await _showNoInfoDialog('email address');
+      return;
+    }
+    await _launch(Uri(scheme: 'mailto', path: contact.emails.first.email), missingLabel: 'email address');
+  }
+
   @override
   Widget build(BuildContext context) {
     final contact = _contact;
@@ -418,9 +469,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
-                        _QuickAction(icon: CupertinoIcons.phone_fill, label: 'Call', onTap: () {}),
-                        _QuickAction(icon: CupertinoIcons.chat_bubble_fill, label: 'Message', onTap: () {}),
-                        _QuickAction(icon: CupertinoIcons.mail_solid, label: 'Mail', onTap: () {}),
+                        _QuickAction(icon: CupertinoIcons.phone_fill, label: 'Call', onTap: _call),
+                        _QuickAction(icon: CupertinoIcons.chat_bubble_fill, label: 'Message', onTap: _message),
+                        _QuickAction(icon: CupertinoIcons.mail_solid, label: 'Mail', onTap: _mail),
                         _QuickAction(
                           icon: contact.isFavorite ? CupertinoIcons.star_fill : CupertinoIcons.star,
                           label: 'Favorite',
@@ -562,6 +613,8 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
   late final TextEditingController _note;
   late List<PhoneEntry> _phones;
   late List<EmailEntry> _emails;
+  late List<TextEditingController> _phoneControllers;
+  late List<TextEditingController> _emailControllers;
 
   bool _saving = false;
 
@@ -574,6 +627,8 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
     _note = TextEditingController(text: e?.note ?? '');
     _phones = List.of(e?.phones ?? const [PhoneEntry(label: 'mobile', number: '')]);
     _emails = List.of(e?.emails ?? const []);
+    _phoneControllers = _phones.map((p) => TextEditingController(text: p.number)).toList();
+    _emailControllers = _emails.map((em) => TextEditingController(text: em.email)).toList();
   }
 
   @override
@@ -581,23 +636,44 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
     _firstName.dispose();
     _lastName.dispose();
     _note.dispose();
+    for (final c in _phoneControllers) {
+      c.dispose();
+    }
+    for (final c in _emailControllers) {
+      c.dispose();
+    }
     super.dispose();
   }
 
   void _addPhoneField() {
-    setState(() => _phones.add(const PhoneEntry(label: 'mobile', number: '')));
+    setState(() {
+      _phones.add(const PhoneEntry(label: 'mobile', number: ''));
+      _phoneControllers.add(TextEditingController());
+    });
   }
 
   void _addEmailField() {
-    setState(() => _emails.add(const EmailEntry(label: 'home', email: '')));
+    setState(() {
+      _emails.add(const EmailEntry(label: 'home', email: ''));
+      _emailControllers.add(TextEditingController());
+    });
   }
 
   Future<void> _save() async {
     if (_firstName.text.trim().isEmpty) return;
     setState(() => _saving = true);
 
-    final cleanPhones = _phones.where((p) => p.number.trim().isNotEmpty).toList();
-    final cleanEmails = _emails.where((e) => e.email.trim().isNotEmpty).toList();
+    // Pull the latest typed values out of the controllers — this is
+    // the single source of truth now, not `onChanged` callbacks.
+    for (int i = 0; i < _phones.length; i++) {
+      _phones[i] = PhoneEntry(label: _phones[i].label, number: _phoneControllers[i].text.trim());
+    }
+    for (int i = 0; i < _emails.length; i++) {
+      _emails[i] = EmailEntry(label: _emails[i].label, email: _emailControllers[i].text.trim());
+    }
+
+    final cleanPhones = _phones.where((p) => p.number.isNotEmpty).toList();
+    final cleanEmails = _emails.where((e) => e.email.isNotEmpty).toList();
 
     if (widget.isEditing) {
       await _repo.update(widget.existing!.copyWith(
@@ -677,9 +753,7 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
                             placeholder: 'Phone number',
                             keyboardType: TextInputType.phone,
                             decoration: null,
-                            controller: TextEditingController(text: _phones[i].number)
-                              ..selection = TextSelection.collapsed(offset: _phones[i].number.length),
-                            onChanged: (v) => _phones[i] = PhoneEntry(label: _phones[i].label, number: v),
+                            controller: _phoneControllers[i],
                           ),
                         ),
                       ],
@@ -709,9 +783,7 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
                             placeholder: 'Email',
                             keyboardType: TextInputType.emailAddress,
                             decoration: null,
-                            controller: TextEditingController(text: _emails[i].email)
-                              ..selection = TextSelection.collapsed(offset: _emails[i].email.length),
-                            onChanged: (v) => _emails[i] = EmailEntry(label: _emails[i].label, email: v),
+                            controller: _emailControllers[i],
                           ),
                         ),
                       ],
