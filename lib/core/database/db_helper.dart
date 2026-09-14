@@ -19,7 +19,7 @@ class DbHelper {
 
     return openDatabase(
       path,
-      version: 1,
+      version: 2, // bumped from 1 -> 2 for the new contact columns
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE contacts (
@@ -31,7 +31,11 @@ class DbHelper {
             emails TEXT,
             note TEXT,
             is_favorite INTEGER DEFAULT 0,
-            updated_at TEXT
+            updated_at TEXT,
+            organization TEXT,
+            address TEXT,
+            birthday TEXT,
+            website TEXT
           )
         ''');
 
@@ -61,6 +65,17 @@ class DbHelper {
         await db.execute('CREATE INDEX idx_contacts_name ON contacts(first_name, last_name)');
         await db.execute('CREATE INDEX idx_calls_timestamp ON call_records(timestamp)');
         await db.execute('CREATE INDEX idx_logs_timestamp ON activity_logs(timestamp)');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          // SQLite only allows adding one column per ALTER TABLE
+          // statement. Existing rows get NULL for all four —
+          // ContactModel.fromDbMap already treats null as "not set".
+          await db.execute('ALTER TABLE contacts ADD COLUMN organization TEXT');
+          await db.execute('ALTER TABLE contacts ADD COLUMN address TEXT');
+          await db.execute('ALTER TABLE contacts ADD COLUMN birthday TEXT');
+          await db.execute('ALTER TABLE contacts ADD COLUMN website TEXT');
+        }
       },
     );
   }
