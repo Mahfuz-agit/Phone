@@ -23,17 +23,47 @@ class ContactRepository {
     return ContactModel.fromDbMap(rows.first);
   }
 
+  /// Strips everything except digits, so "+880 177-405 7439" and
+  /// "01774057439" can be compared meaningfully. Used for both the
+  /// search box (#22) and duplicate detection during vCard import.
+  static String normalizeDigits(String input) => input.replaceAll(RegExp(r'\D'), '');
+
+  /// Searches name, phone, email, and note (#21). Phone matching is
+  /// done two ways: a plain SQL LIKE (fast, catches exact substrings)
+  /// plus an in-memory digits-only comparison (catches formatting
+  /// differences the LIKE would miss, e.g. searching "1774057439"
+  /// should find "+880 1774-057439").
   Future<List<ContactModel>> search(String query) async {
-    if (query.trim().isEmpty) return getAll();
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return getAll();
+
     final db = await DbHelper.instance.database;
-    final like = '%${query.trim()}%';
+    final like = '%$trimmed%';
     final rows = await db.query(
       'contacts',
-      where: 'first_name LIKE ? OR last_name LIKE ? OR phones LIKE ?',
-      whereArgs: [like, like, like],
-      orderBy: 'first_name COLLATE NOCASE ASC',
+      where: 'first_name LIKE ? OR last_name LIKE ? OR phones LIKE ? OR emails LIKE ? OR note LIKE ?',
+      whereArgs: [like, like, like, like, like],
     );
-    return rows.map((r) => ContactModel.fromDbMap(r)).toList();
+    final results = rows.map((r) => ContactModel.fromDbMap(r)).toList();
+    final matchedIds = results.map((c) => c.id).toSet();
+
+    final queryDigits = normalizeDigits(trimmed);
+    if (queryDigits.isNotEmpty) {
+      final all = await getAll();
+      for (final c in all) {
+        if (matchedIds.contains(c.id)) continue;
+        final hasDigitMatch = c.phones.any(
+          (p) => normalizeDigits(p.number).contains(queryDigits),
+        );
+        if (hasDigitMatch) {
+          results.add(c);
+          matchedIds.add(c.id);
+        }
+      }
+    }
+
+    results.sort((a, b) => a.firstName.toLowerCase().compareTo(b.firstName.toLowerCase()));
+    return results;
   }
 
   Future<List<ContactModel>> getFavorites() async {
@@ -46,6 +76,22 @@ class ContactRepository {
     return rows.map((r) => ContactModel.fromDbMap(r)).toList();
   }
 
+  /// Finds an existing contact sharing at least one phone number
+  /// (compared digit-only) with the given list — used by vCard
+  /// import to detect duplicates (issue #14).
+  Future<ContactModel?> findByAnyPhone(List<PhoneEntry> phones) async {
+    if (phones.isEmpty) return null;
+    final targetDigits = phones.map((p) => normalizeDigits(p.number)).where((d) => d.isNotEmpty).toSet();
+    if (targetDigits.isEmpty) return null;
+
+    final all = await getAll();
+    for (final c in all) {
+      final hasOverlap = c.phones.any((p) => targetDigits.contains(normalizeDigits(p.number)));
+      if (hasOverlap) return c;
+    }
+    return null;
+  }
+
   Future<ContactModel> create({
     required String firstName,
     required String lastName,
@@ -53,6 +99,10 @@ class ContactRepository {
     List<PhoneEntry> phones = const [],
     List<EmailEntry> emails = const [],
     String? note,
+    String? organization,
+    String? address,
+    DateTime? birthday,
+    String? website,
   }) async {
     final db = await DbHelper.instance.database;
     final contact = ContactModel(
@@ -64,6 +114,10 @@ class ContactRepository {
       emails: emails,
       note: note,
       updatedAt: DateTime.now(),
+      organization: organization,
+      address: address,
+      birthday: birthday,
+      website: website,
     );
     await db.insert('contacts', contact.toDbMap());
 
