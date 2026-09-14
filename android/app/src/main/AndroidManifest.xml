@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- CSV export / file manager visibility -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -47,10 +48,31 @@
             android:value="2" />
     </application>
 
-    <!-- Required to query other apps' recorders/dialers if ever needed -->
+    <!--
+      Fix for issue #30: canLaunchUrl()/launchUrl() from url_launcher
+      need the target scheme declared here on Android 11+ (package
+      visibility restrictions), otherwise canLaunchUrl() always
+      returns false even when a dialer/SMS/email app is installed.
+    -->
     <queries>
         <intent>
             <action android:name="android.intent.action.DIAL" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="tel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="sms" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
         </intent>
     </queries>
 
