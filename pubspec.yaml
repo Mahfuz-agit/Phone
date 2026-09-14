@@ -15,7 +15,7 @@ dependencies:
   path_provider: ^2.1.4
   permission_handler: ^11.3.1
   phone_state: ^4.0.1
-  record: ^5.1.2
+  record: ^7.1.1
   audioplayers: ^6.1.0
   csv: ^6.0.0
   pdf: ^3.11.1
