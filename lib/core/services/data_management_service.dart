@@ -60,13 +60,16 @@ class DataManagementService {
   /// by the stock iOS/Android Contacts apps. Multi-line folded values
   /// are not handled — most mobile exports don't fold lines.
   Future<int> importVCardFromFile() async {
-    final picked = await FilePicker.platform.pickFiles(
+    // file_picker 12.x: pickFile() is the single-selection
+    // convenience method, returning PlatformFile? directly
+    // (no more FilePickerResult wrapper).
+    final picked = await FilePicker.platform.pickFile(
       type: FileType.custom,
       allowedExtensions: ['vcf'],
     );
-    if (picked == null || picked.files.single.path == null) return 0;
+    if (picked == null || picked.path == null) return 0;
 
-    final content = await File(picked.files.single.path!).readAsString();
+    final content = await File(picked.path!).readAsString();
     final cards = content.split('BEGIN:VCARD').where((c) => c.trim().isNotEmpty);
 
     int imported = 0;
@@ -158,13 +161,14 @@ class DataManagementService {
   /// the current database and recordings folder — callers should
   /// confirm with the user before invoking this.
   Future<bool> restoreBackup() async {
-    final picked = await FilePicker.platform.pickFiles(
+    final picked = await FilePicker.platform.pickFile(
       type: FileType.custom,
       allowedExtensions: ['zip'],
     );
-    if (picked == null || picked.files.single.path == null) return false;
+    if (picked == null || picked.path == null) return false;
 
-    final bytes = await File(picked.files.single.path!).readAsBytes();
+    final pickedPath = picked.path!;
+    final bytes = await File(pickedPath).readAsBytes();
     final archive = ZipDecoder().decodeBytes(bytes);
 
     // Close the current DB connection before overwriting the file.
@@ -194,7 +198,7 @@ class DataManagementService {
 
     await _activityLog.log(
       type: ActivityType.restore,
-      description: 'Restored backup ${p.basename(picked.files.single.path!)}',
+      description: 'Restored backup ${p.basename(pickedPath)}',
     );
 
     return true;
