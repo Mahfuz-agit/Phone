@@ -350,7 +350,13 @@ class _RecordingCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final maxSeconds = duration.inSeconds.toDouble().clamp(1, double.infinity);
+    // Explicit double literals + explicit cast: `.clamp()` on a
+    // double with int bounds returns `num`, which Slider/RangeSlider
+    // reject at compile time.
+    final double maxSeconds =
+        duration.inSeconds > 0 ? duration.inSeconds.toDouble() : 1.0;
+    final double positionSeconds =
+        position.inSeconds.toDouble().clamp(0.0, maxSeconds).toDouble();
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -376,7 +382,7 @@ class _RecordingCard extends StatelessWidget {
               ),
               Expanded(
                 child: Slider(
-                  value: position.inSeconds.toDouble().clamp(0, maxSeconds),
+                  value: positionSeconds,
                   max: maxSeconds,
                   onChanged: onSeek,
                   activeColor: AppColors.systemBlue,
