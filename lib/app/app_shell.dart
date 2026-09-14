@@ -39,7 +39,13 @@ class AppShell extends StatelessWidget {
             return CupertinoTabView(builder: (_) => const CallsListScreen());
           case 1:
           default:
-            return CupertinoTabView(builder: (_) => const ContactsListScreen());
+            return CupertinoTabView(
+              builder: (innerContext) => ContactsListScreen(
+                onMoreTap: () => Navigator.of(innerContext).push(
+                  CupertinoPageRoute(builder: (_) => const MoreScreen()),
+                ),
+              ),
+            );
         }
       },
     );
