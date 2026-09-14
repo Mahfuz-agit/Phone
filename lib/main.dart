@@ -1,10 +1,18 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'app/app_shell.dart';
 import 'app/theme/app_theme.dart';
 import 'core/database/db_helper.dart';
+import 'core/repositories/call_repository.dart';
+import 'core/repositories/contact_repository.dart';
+import 'core/services/audio_recording_service.dart';
+import 'core/services/call_detection_service.dart';
 import 'core/services/recording_foreground_task.dart';
+
+/// Global instance — lives on the main isolate for the whole app lifetime.
+late final CallDetectionService callDetectionService;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -12,30 +20,41 @@ Future<void> main() async {
   await DbHelper.instance.database;
   await RecordingForegroundController.init();
 
+  callDetectionService = CallDetectionService(
+    audioService: AudioRecordingService(),
+    callRepository: CallRepository(),
+    contactRepository: ContactRepository(),
+  );
+
   final granted = await _requestRuntimePermissions();
 
-  // This was missing before: init() only registers the notification
-  // channel/config, it does not start the service. Without calling
-  // start(), CallDetectionService never subscribes to the phone_state
-  // stream, so calls were never detected, recorded, or logged —
-  // which is why Recents stayed empty.
   if (granted) {
-    await RecordingForegroundController.start();
+    await _startCallPipeline();
+  } else {
+    debugPrint(
+      '[main] Mic/Phone permission missing — call detection not started',
+    );
   }
 
   runApp(const PhonebookApp());
 }
 
-/// Requests every runtime permission the app needs up front. Some of
-/// these (READ_CALL_LOG + RECORD_AUDIO together) are sensitive — see
-/// the note in android_manifest.md about default-dialer requirements
-/// for Play Store distribution.
-///
-/// Returns true only if the two permissions the foreground service
-/// actually needs (microphone + phone state) were granted — POST_
-/// NOTIFICATIONS is required on Android 13+ for the persistent
-/// "Call recording active" notification to show, but its absence
-/// shouldn't block starting the service.
+/// Starts both the keep-alive foreground service and the main-isolate
+/// phone state listener.
+Future<void> _startCallPipeline() async {
+  try {
+    final result = await RecordingForegroundController.start();
+    debugPrint('[main] Foreground service start → $result');
+  } catch (e, st) {
+    debugPrint('[main] Foreground service failed: $e\n$st');
+  }
+
+  callDetectionService.start();
+  debugPrint('[main] CallDetectionService started on main isolate');
+}
+
+/// Returns true only when microphone + phone state are granted.
+/// Notification is requested but not required to start detection.
 Future<bool> _requestRuntimePermissions() async {
   final statuses = await [
     Permission.microphone,
@@ -44,8 +63,21 @@ Future<bool> _requestRuntimePermissions() async {
     Permission.storage,
   ].request();
 
+  // READ_CALL_LOG helps phone_state return the caller number on some OEMs.
+  // Permission.phone already covers it on most Android versions; this is a
+  // best-effort extra request where the OS exposes it separately.
+  try {
+    await Permission.phone.request();
+  } catch (_) {}
+
   final micGranted = statuses[Permission.microphone]?.isGranted ?? false;
   final phoneGranted = statuses[Permission.phone]?.isGranted ?? false;
+
+  debugPrint(
+    '[main] permissions → mic=$micGranted phone=$phoneGranted '
+    'notification=${statuses[Permission.notification]?.isGranted}',
+  );
+
   return micGranted && phoneGranted;
 }
 
