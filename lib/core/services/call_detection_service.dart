@@ -46,6 +46,14 @@ class CallDetectionService {
         _activeType = CallType.incoming;
         break;
 
+      case PhoneStateStatus.CALL_OUTGOING:
+        // Fired the moment the user dials, before the other party
+        // has picked up. Recording still only starts at CALL_STARTED
+        // (i.e. once the call is actually connected).
+        _activeNumber = state.number;
+        _activeType = CallType.outgoing;
+        break;
+
       case PhoneStateStatus.CALL_STARTED:
         _callStartedAt = DateTime.now();
         _activeNumber ??= state.number;
@@ -96,8 +104,6 @@ class CallDetectionService {
 // Android 10+ restricts starting microphone recording from a
 // background process. To keep this listener + recorder alive while
 // the app is minimized during a call, wrap this service inside a
-// foreground service (e.g. via the `flutter_foreground_task` or
-// `flutter_background_service` package) with a persistent
-// notification such as "Call recording active". Without it,
-// recording will only work reliably while the app is in the
-// foreground. This is the next dependency to add before shipping.
+// foreground service (e.g. via the `flutter_foreground_task` package)
+// with a persistent notification such as "Call recording active".
+// See recording_foreground_task.dart, which already does this.
