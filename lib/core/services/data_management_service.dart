@@ -60,10 +60,10 @@ class DataManagementService {
   /// by the stock iOS/Android Contacts apps. Multi-line folded values
   /// are not handled — most mobile exports don't fold lines.
   Future<int> importVCardFromFile() async {
-    // file_picker 12.x: pickFile() is the single-selection
-    // convenience method, returning PlatformFile? directly
-    // (no more FilePickerResult wrapper).
-    final picked = await FilePicker.platform.pickFile(
+    // file_picker 12.x: FilePicker.pickFile() is a static method on
+    // the FilePicker class itself — there is no more `.platform`
+    // singleton to go through.
+    final picked = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['vcf'],
     );
@@ -161,7 +161,7 @@ class DataManagementService {
   /// the current database and recordings folder — callers should
   /// confirm with the user before invoking this.
   Future<bool> restoreBackup() async {
-    final picked = await FilePicker.platform.pickFile(
+    final picked = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['zip'],
     );
