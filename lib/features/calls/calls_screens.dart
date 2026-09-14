@@ -20,7 +20,8 @@ class CallsListScreen extends StatefulWidget {
   State<CallsListScreen> createState() => _CallsListScreenState();
 }
 
-class _CallsListScreenState extends State<CallsListScreen> {
+class _CallsListScreenState extends State<CallsListScreen>
+    with WidgetsBindingObserver {
   final _repo = CallRepository();
   final _searchController = TextEditingController();
 
@@ -31,15 +32,38 @@ class _CallsListScreenState extends State<CallsListScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
   }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  /// Reload when app returns to foreground (e.g. after a call ends).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_searchingRecordings) {
+      _load();
+    }
+  }
+
   Future<void> _load() async {
-    final calls = await _repo.getAll();
-    setState(() {
-      _calls = calls;
-      _loading = false;
-    });
+    setState(() => _loading = true);
+    try {
+      final calls = await _repo.getAll();
+      if (!mounted) return;
+      setState(() {
+        _calls = calls;
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
   }
 
   Future<void> _onRecordingSearch(String query) async {
@@ -48,6 +72,7 @@ class _CallsListScreenState extends State<CallsListScreen> {
       return;
     }
     final results = await _repo.searchRecordings(query.trim());
+    if (!mounted) return;
     setState(() => _calls = results);
   }
 
@@ -78,10 +103,32 @@ class _CallsListScreenState extends State<CallsListScreen> {
       backgroundColor: AppColors.groupedBackground,
       navigationBar: CupertinoNavigationBar(
         middle: const Text('Calls'),
-        trailing: CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: () => setState(() => _searchingRecordings = !_searchingRecordings),
-          child: Icon(_searchingRecordings ? CupertinoIcons.xmark : CupertinoIcons.search),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CupertinoButton(
+              padding: EdgeInsets.zero,
+              onPressed: _load,
+              child: const Icon(CupertinoIcons.refresh),
+            ),
+            CupertinoButton(
+              padding: EdgeInsets.zero,
+              onPressed: () {
+                setState(() {
+                  _searchingRecordings = !_searchingRecordings;
+                  if (!_searchingRecordings) {
+                    _searchController.clear();
+                    _load();
+                  }
+                });
+              },
+              child: Icon(
+                _searchingRecordings
+                    ? CupertinoIcons.xmark
+                    : CupertinoIcons.search,
+              ),
+            ),
+          ],
         ),
       ),
       child: SafeArea(
@@ -102,7 +149,9 @@ class _CallsListScreenState extends State<CallsListScreen> {
                   : _calls.isEmpty
                       ? Center(
                           child: Text(
-                            _searchingRecordings ? 'No matching recordings' : 'No calls yet',
+                            _searchingRecordings
+                                ? 'No matching recordings'
+                                : 'No calls yet',
                             style: AppTypography.subhead,
                           ),
                         )
@@ -111,28 +160,44 @@ class _CallsListScreenState extends State<CallsListScreen> {
                           itemCount: _calls.length,
                           separatorBuilder: (_, __) => const Padding(
                             padding: EdgeInsets.only(left: 60),
-                            child: Divider(height: 1, color: AppColors.separator),
+                            child: Divider(
+                              height: 1,
+                              color: AppColors.separator,
+                            ),
                           ),
                           itemBuilder: (context, index) {
                             final call = _calls[index];
                             return CupertinoListTile(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              leading: Icon(_iconFor(call.type), color: _colorFor(call.type), size: 20),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              leading: Icon(
+                                _iconFor(call.type),
+                                color: _colorFor(call.type),
+                                size: 20,
+                              ),
                               title: Text(
                                 call.displayName,
                                 style: call.type == CallType.missed
-                                    ? AppTypography.body.copyWith(color: AppColors.systemRed)
+                                    ? AppTypography.body
+                                        .copyWith(color: AppColors.systemRed)
                                     : AppTypography.body,
                               ),
                               subtitle: Text(
-                                DateFormat('MMM d, h:mm a').format(call.timestamp),
+                                DateFormat('MMM d, h:mm a')
+                                    .format(call.timestamp),
                                 style: AppTypography.footnote,
                               ),
                               trailing: call.hasRecording
-                                  ? const Icon(CupertinoIcons.mic_fill, color: AppColors.systemBlue, size: 18)
+                                  ? const Icon(
+                                      CupertinoIcons.mic_fill,
+                                      color: AppColors.systemBlue,
+                                      size: 18,
+                                    )
                                   : Text(
                                       call.durationSeconds > 0
-                                          ? '${call.durationSeconds ~/ 60}:${(call.durationSeconds % 60).toString().padLeft(2, '0')}'
+                                          ? '\( {call.durationSeconds \~/ 60}: \){(call.durationSeconds % 60).toString().padLeft(2, '0')}'
                                           : '',
                                       style: AppTypography.footnote,
                                     ),
@@ -171,7 +236,7 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
   Duration _playerPosition = Duration.zero;
   bool _isPlaying = false;
 
-  RangeValues? _trimRange; // in seconds, set once duration is known
+  RangeValues? _trimRange;
   bool _trimming = false;
 
   @override
@@ -185,8 +250,10 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
         _trimRange ??= RangeValues(0, d.inSeconds.toDouble());
       });
     });
-    _player.onPositionChanged.listen((p) => setState(() => _playerPosition = p));
-    _player.onPlayerStateChanged.listen((s) => setState(() => _isPlaying = s == PlayerState.playing));
+    _player.onPositionChanged
+        .listen((p) => setState(() => _playerPosition = p));
+    _player.onPlayerStateChanged
+        .listen((s) => setState(() => _isPlaying = s == PlayerState.playing));
   }
 
   Future<void> _load() async {
@@ -239,9 +306,15 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
         title: const Text('Rename Recording'),
-        content: CupertinoTextField(controller: controller, placeholder: 'New file name'),
+        content: CupertinoTextField(
+          controller: controller,
+          placeholder: 'New file name',
+        ),
         actions: [
-          CupertinoDialogAction(child: const Text('Cancel'), onPressed: () => Navigator.pop(ctx)),
+          CupertinoDialogAction(
+            child: const Text('Cancel'),
+            onPressed: () => Navigator.pop(ctx),
+          ),
           CupertinoDialogAction(
             child: const Text('Rename'),
             onPressed: () => Navigator.pop(ctx, controller.text.trim()),
@@ -251,7 +324,8 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
     );
 
     if (newName != null && newName.isNotEmpty) {
-      final newPath = await _audioService.renameFile(call!.recordingPath!, newName);
+      final newPath =
+          await _audioService.renameFile(call!.recordingPath!, newName);
       await _repo.renameRecording(call.id, newPath);
       await _load();
     }
@@ -284,7 +358,8 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
                         Text(call.phoneNumber, style: AppTypography.subhead),
                         const SizedBox(height: 8),
                         Text(
-                          DateFormat('MMM d, yyyy • h:mm a').format(call.timestamp),
+                          DateFormat('MMM d, yyyy • h:mm a')
+                              .format(call.timestamp),
                           style: AppTypography.footnote,
                         ),
                       ],
@@ -298,7 +373,10 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
                         color: AppColors.cardBackground,
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Text('No recording for this call', style: AppTypography.subhead),
+                      child: const Text(
+                        'No recording for this call',
+                        style: AppTypography.subhead,
+                      ),
                     )
                   else
                     _RecordingCard(
@@ -308,8 +386,10 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
                       trimRange: _trimRange,
                       trimming: _trimming,
                       onTogglePlay: _togglePlay,
-                      onSeek: (v) => _player.seek(Duration(seconds: v.round())),
-                      onTrimRangeChanged: (r) => setState(() => _trimRange = r),
+                      onSeek: (v) =>
+                          _player.seek(Duration(seconds: v.round())),
+                      onTrimRangeChanged: (r) =>
+                          setState(() => _trimRange = r),
                       onApplyTrim: _applyTrim,
                       onRename: _renamePrompt,
                     ),
@@ -346,13 +426,10 @@ class _RecordingCard extends StatelessWidget {
   });
 
   String _fmt(Duration d) =>
-      '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+      '\( {d.inMinutes}: \){(d.inSeconds % 60).toString().padLeft(2, '0')}';
 
   @override
   Widget build(BuildContext context) {
-    // Explicit double literals + explicit cast: `.clamp()` on a
-    // double with int bounds returns `num`, which Slider/RangeSlider
-    // reject at compile time.
     final double maxSeconds =
         duration.inSeconds > 0 ? duration.inSeconds.toDouble() : 1.0;
     final double positionSeconds =
@@ -375,7 +452,9 @@ class _RecordingCard extends StatelessWidget {
                 padding: EdgeInsets.zero,
                 onPressed: onTogglePlay,
                 child: Icon(
-                  isPlaying ? CupertinoIcons.pause_circle_fill : CupertinoIcons.play_circle_fill,
+                  isPlaying
+                      ? CupertinoIcons.pause_circle_fill
+                      : CupertinoIcons.play_circle_fill,
                   size: 40,
                   color: AppColors.systemBlue,
                 ),
@@ -388,7 +467,10 @@ class _RecordingCard extends StatelessWidget {
                   activeColor: AppColors.systemBlue,
                 ),
               ),
-              Text('${_fmt(position)} / ${_fmt(duration)}', style: AppTypography.footnote),
+              Text(
+                '${_fmt(position)} / ${_fmt(duration)}',
+                style: AppTypography.footnote,
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -409,7 +491,9 @@ class _RecordingCard extends StatelessWidget {
             alignment: Alignment.centerRight,
             child: CupertinoButton(
               onPressed: trimming ? null : onApplyTrim,
-              child: trimming ? const CupertinoActivityIndicator() : const Text('Apply Trim'),
+              child: trimming
+                  ? const CupertinoActivityIndicator()
+                  : const Text('Apply Trim'),
             ),
           ),
           const Divider(height: 1, color: AppColors.separator),
