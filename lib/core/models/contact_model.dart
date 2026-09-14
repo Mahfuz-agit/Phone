@@ -4,7 +4,7 @@ class PhoneEntry {
   final String label; // mobile, home, work
   final String number;
 
-  PhoneEntry({required this.label, required this.number});
+  const PhoneEntry({required this.label, required this.number});
 
   Map<String, dynamic> toMap() => {'label': label, 'number': number};
 
@@ -16,7 +16,7 @@ class EmailEntry {
   final String label;
   final String email;
 
-  EmailEntry({required this.label, required this.email});
+  const EmailEntry({required this.label, required this.email});
 
   Map<String, dynamic> toMap() => {'label': label, 'email': email};
 
