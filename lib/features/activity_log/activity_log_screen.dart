@@ -16,8 +16,8 @@ import '../../core/repositories/activity_log_repository.dart';
 /// =====================================================================
 /// SCREEN: ActivityLogScreen
 /// Shows every logged action (call, contact add/edit/delete, recording
-/// rename/trim, backup/restore) with type/date filtering and CSV/PDF
-/// export — all in one file per the "fewer files" instruction.
+/// rename/trim, backup/restore, call log import) with type/date filtering
+/// and CSV/PDF export — all in one file per the "fewer files" instruction.
 /// =====================================================================
 class ActivityLogScreen extends StatefulWidget {
   const ActivityLogScreen({super.key});
@@ -75,6 +75,8 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
         return 'Backup';
       case ActivityType.restore:
         return 'Restore';
+      case ActivityType.callLogImported:
+        return 'Call history imported';
     }
   }
 
@@ -96,6 +98,8 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
         return CupertinoIcons.cloud_upload;
       case ActivityType.restore:
         return CupertinoIcons.cloud_download;
+      case ActivityType.callLogImported:
+        return CupertinoIcons.arrow_down_doc;
     }
   }
 
@@ -169,7 +173,10 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
                           tempRange = null;
                         });
                       },
-                      child: const Text('Clear', style: TextStyle(color: AppColors.label)),
+                      child: const Text(
+                        'Clear',
+                        style: TextStyle(color: AppColors.label),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -222,9 +229,19 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
       ];
       final csvString = const ListToCsvConverter().convert(rows);
       final dir = await _exportDir();
-      final file = File(p.join(dir.path, 'activity_log_${DateTime.now().millisecondsSinceEpoch}.csv'));
+      final file = File(
+        p.join(
+          dir.path,
+          'activity_log_${DateTime.now().millisecondsSinceEpoch}.csv',
+        ),
+      );
       await file.writeAsString(csvString);
-      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], text: 'Activity log export'));
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          text: 'Activity log export',
+        ),
+      );
     } finally {
       setState(() => _exporting = false);
     }
@@ -248,16 +265,29 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
                       ])
                   .toList(),
               cellStyle: const pw.TextStyle(fontSize: 9),
-              headerStyle: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
+              headerStyle: pw.TextStyle(
+                fontSize: 10,
+                fontWeight: pw.FontWeight.bold,
+              ),
             ),
           ],
         ),
       );
 
       final dir = await _exportDir();
-      final file = File(p.join(dir.path, 'activity_log_${DateTime.now().millisecondsSinceEpoch}.pdf'));
+      final file = File(
+        p.join(
+          dir.path,
+          'activity_log_${DateTime.now().millisecondsSinceEpoch}.pdf',
+        ),
+      );
       await file.writeAsBytes(await doc.save());
-      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], text: 'Activity log export'));
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          text: 'Activity log export',
+        ),
+      );
     } finally {
       setState(() => _exporting = false);
     }
@@ -275,7 +305,9 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
           padding: EdgeInsets.zero,
           onPressed: _openFilterSheet,
           child: Icon(
-            hasFilter ? CupertinoIcons.line_horizontal_3_decrease_circle_fill : CupertinoIcons.line_horizontal_3_decrease_circle,
+            hasFilter
+                ? CupertinoIcons.line_horizontal_3_decrease_circle_fill
+                : CupertinoIcons.line_horizontal_3_decrease_circle,
             color: AppColors.systemBlue,
           ),
         ),
@@ -317,22 +349,41 @@ class _ActivityLogScreenState extends State<ActivityLogScreen> {
         child: _loading
             ? const Center(child: CupertinoActivityIndicator())
             : _logs.isEmpty
-                ? Center(child: Text('No activity recorded', style: AppTypography.subhead))
+                ? Center(
+                    child: Text(
+                      'No activity recorded',
+                      style: AppTypography.subhead,
+                    ),
+                  )
                 : ListView.separated(
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     itemCount: _logs.length,
                     separatorBuilder: (_, __) => const Padding(
                       padding: EdgeInsets.only(left: 56),
-                      child: Divider(height: 1, color: AppColors.separator),
+                      child: Divider(
+                        height: 1,
+                        color: AppColors.separator,
+                      ),
                     ),
                     itemBuilder: (context, index) {
                       final log = _logs[index];
                       return CupertinoListTile(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        leading: Icon(_iconFor(log.type), color: AppColors.systemBlue, size: 20),
-                        title: Text(log.description, style: AppTypography.body),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        leading: Icon(
+                          _iconFor(log.type),
+                          color: AppColors.systemBlue,
+                          size: 20,
+                        ),
+                        title: Text(
+                          log.description,
+                          style: AppTypography.body,
+                        ),
                         subtitle: Text(
-                          DateFormat('MMM d, yyyy • h:mm a').format(log.timestamp),
+                          DateFormat('MMM d, yyyy • h:mm a')
+                              .format(log.timestamp),
                           style: AppTypography.footnote,
                         ),
                       );
@@ -348,7 +399,11 @@ class _FilterChip extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
 
-  const _FilterChip({required this.label, required this.selected, required this.onTap});
+  const _FilterChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -357,7 +412,9 @@ class _FilterChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: selected ? AppColors.systemBlue : AppColors.systemGray6,
+          color: selected
+              ? AppColors.systemBlue
+              : AppColors.systemGray6,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Text(
