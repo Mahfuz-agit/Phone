@@ -46,14 +46,21 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!--
+          CRITICAL — required by flutter_foreground_task on Android 14+.
+          Do not rename android:name. Without this exact service
+          declaration + foregroundServiceType, the service throws
+          MissingForegroundServiceTypeException at startup and
+          RecordingForegroundController.start() fails silently —
+          this is why Calls stayed empty even during live app use.
+        -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
     </application>
 
-    <!--
-      Fix for issue #30: canLaunchUrl()/launchUrl() from url_launcher
-      need the target scheme declared here on Android 11+ (package
-      visibility restrictions), otherwise canLaunchUrl() always
-      returns false even when a dialer/SMS/email app is installed.
-    -->
     <queries>
         <intent>
             <action android:name="android.intent.action.DIAL" />
