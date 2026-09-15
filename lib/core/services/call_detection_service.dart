@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:phone_state/phone_state.dart';
 
 import '../models/call_record_model.dart';
@@ -7,12 +6,10 @@ import '../repositories/call_repository.dart';
 import '../repositories/contact_repository.dart';
 import 'audio_recording_service.dart';
 
-/// Listens to system phone call state on the **main isolate** and
-/// drives auto-recording + call logging.
-///
-/// Must NOT be started inside a flutter_foreground_task isolate —
-/// phone_state requires the main Flutter engine to deliver events
-/// reliably.
+/// Listens to phone call state (idle / ringing / offhook) and drives
+/// auto-recording start/stop. This must run inside a foreground
+/// service to survive the app being backgrounded on Android 10+ —
+/// see NOTE at the bottom of this file.
 class CallDetectionService {
   final AudioRecordingService _audio;
   final CallRepository _callRepo;
@@ -24,7 +21,6 @@ class CallDetectionService {
   String? _activeNumber;
   String? _activeCallId;
   CallType? _activeType;
-  bool _isFinishing = false;
 
   CallDetectionService({
     required AudioRecordingService audioService,
@@ -34,132 +30,80 @@ class CallDetectionService {
         _callRepo = callRepository,
         _contactRepo = contactRepository;
 
-  bool get isListening => _sub != null;
-
   void start() {
-    if (_sub != null) return;
-
-    debugPrint('[CallDetection] Starting PhoneState listener (main isolate)');
-    _sub = PhoneState.stream.listen(
-      _onStateChanged,
-      onError: (Object e, StackTrace st) {
-        debugPrint('[CallDetection] Stream error: $e\n$st');
-      },
-      cancelOnError: false,
-    );
+    _sub = PhoneState.stream.listen(_onStateChanged);
   }
 
   void stop() {
-    debugPrint('[CallDetection] Stopping PhoneState listener');
     _sub?.cancel();
     _sub = null;
   }
 
   Future<void> _onStateChanged(PhoneState state) async {
-    try {
-      debugPrint(
-        '[CallDetection] status=\( {state.status} number= \){state.number}',
-      );
+    switch (state.status) {
+      case PhoneStateStatus.CALL_INCOMING:
+        _activeNumber = state.number;
+        _activeType = CallType.incoming;
+        break;
 
-      switch (state.status) {
-        case PhoneStateStatus.CALL_INCOMING:
-          _activeNumber = _normalizeNumber(state.number);
-          _activeType = CallType.incoming;
-          break;
+      case PhoneStateStatus.CALL_OUTGOING:
+        // Fired the moment the user dials, before the other party
+        // has picked up. Recording still only starts at CALL_STARTED
+        // (i.e. once the call is actually connected).
+        _activeNumber = state.number;
+        _activeType = CallType.outgoing;
+        break;
 
-        case PhoneStateStatus.CALL_OUTGOING:
-          _activeNumber = _normalizeNumber(state.number);
-          _activeType = CallType.outgoing;
-          break;
+      case PhoneStateStatus.CALL_STARTED:
+        _callStartedAt = DateTime.now();
+        _activeNumber ??= state.number;
+        _activeType ??= CallType.outgoing;
+        _activeCallId = DateTime.now().millisecondsSinceEpoch.toString();
+        await _audio.startRecording(_activeCallId!);
+        break;
 
-        case PhoneStateStatus.CALL_STARTED:
-          _callStartedAt = DateTime.now();
-          _activeNumber ??= _normalizeNumber(state.number);
-          _activeType ??= CallType.outgoing;
-          _activeCallId = DateTime.now().millisecondsSinceEpoch.toString();
+      case PhoneStateStatus.CALL_ENDED:
+        await _finishCall();
+        break;
 
-          try {
-            await _audio.startRecording(_activeCallId!);
-            debugPrint('[CallDetection] Recording started for $_activeCallId');
-          } catch (e, st) {
-            debugPrint('[CallDetection] startRecording failed: $e\n$st');
-          }
-          break;
-
-        case PhoneStateStatus.CALL_ENDED:
-          await _finishCall();
-          break;
-
-        case PhoneStateStatus.NOTHING:
-          break;
-      }
-    } catch (e, st) {
-      debugPrint('[CallDetection] _onStateChanged error: $e\n$st');
+      case PhoneStateStatus.NOTHING:
+        // No-op: fires on app start / no active call.
+        break;
     }
   }
 
   Future<void> _finishCall() async {
-    if (_isFinishing) return;
-    _isFinishing = true;
+    final recordingPath = await _audio.stopRecording();
 
-    try {
-      String? recordingPath;
-      try {
-        recordingPath = await _audio.stopRecording();
-        debugPrint('[CallDetection] Recording stopped → $recordingPath');
-      } catch (e, st) {
-        debugPrint('[CallDetection] stopRecording failed: $e\n$st');
-      }
+    final number = _activeNumber ?? 'Unknown';
+    final start = _callStartedAt;
+    final duration = start == null ? 0 : DateTime.now().difference(start).inSeconds;
 
-      final number = _activeNumber?.isNotEmpty == true ? _activeNumber! : 'Unknown';
-      final start = _callStartedAt;
-      final duration =
-          start == null ? 0 : DateTime.now().difference(start).inSeconds;
+    final contact = await _contactRepo.search(number);
+    final matched = contact.isNotEmpty ? contact.first : null;
 
-      String? contactId;
-      String displayName = number;
-
-      try {
-        final matches = await _contactRepo.search(number);
-        if (matches.isNotEmpty) {
-          contactId = matches.first.id;
-          displayName = matches.first.fullName;
-        }
-      } catch (e, st) {
-        debugPrint('[CallDetection] contact search failed: $e\n$st');
-      }
-
-      final type = (duration == 0 && _activeType == CallType.incoming)
+    await _callRepo.logCall(
+      contactId: matched?.id,
+      phoneNumber: number,
+      displayName: matched?.fullName ?? number,
+      type: duration == 0 && _activeType == CallType.incoming
           ? CallType.missed
-          : (_activeType ?? CallType.incoming);
+          : (_activeType ?? CallType.incoming),
+      durationSeconds: duration,
+      recordingPath: recordingPath,
+    );
 
-      await _callRepo.logCall(
-        contactId: contactId,
-        phoneNumber: number,
-        displayName: displayName,
-        type: type,
-        durationSeconds: duration,
-        recordingPath: recordingPath,
-      );
-
-      debugPrint(
-        '[CallDetection] Logged $type call with $displayName '
-        '(\( {duration}s, recording= \){recordingPath != null})',
-      );
-    } catch (e, st) {
-      debugPrint('[CallDetection] _finishCall error: $e\n$st');
-    } finally {
-      _callStartedAt = null;
-      _activeNumber = null;
-      _activeCallId = null;
-      _activeType = null;
-      _isFinishing = false;
-    }
-  }
-
-  String? _normalizeNumber(String? raw) {
-    if (raw == null) return null;
-    final trimmed = raw.trim();
-    return trimmed.isEmpty ? null : trimmed;
+    _callStartedAt = null;
+    _activeNumber = null;
+    _activeCallId = null;
+    _activeType = null;
   }
 }
+
+// NOTE — Foreground service requirement:
+// Android 10+ restricts starting microphone recording from a
+// background process. To keep this listener + recorder alive while
+// the app is minimized during a call, wrap this service inside a
+// foreground service (e.g. via the `flutter_foreground_task` package)
+// with a persistent notification such as "Call recording active".
+// See recording_foreground_task.dart, which already does this.
