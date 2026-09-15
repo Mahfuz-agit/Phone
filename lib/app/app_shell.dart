@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 
+import '../core/repositories/call_repository.dart';
 import '../core/services/data_management_service.dart';
 import '../features/activity_log/activity_log_screen.dart';
 import '../features/calls/calls_screens.dart';
@@ -9,8 +10,9 @@ import 'theme/app_theme.dart';
 /// =====================================================================
 /// ROOT SHELL
 /// Exactly two bottom tabs — Calls and Contacts — per spec. Activity
-/// Log, Backup/Restore, and vCard import/export live one level deeper,
-/// behind the gear icon on the Contacts tab (see MoreScreen below).
+/// Log, Backup/Restore, vCard import/export, and system call history
+/// sync all live one level deeper, behind the gear icon on the
+/// Contacts tab (see MoreScreen below).
 /// =====================================================================
 class AppShell extends StatelessWidget {
   const AppShell({super.key});
@@ -58,6 +60,7 @@ class MoreScreen extends StatefulWidget {
 
 class _MoreScreenState extends State<MoreScreen> {
   final _dataService = DataManagementService();
+  final _callRepo = CallRepository();
   bool _busy = false;
 
   Future<void> _showResult(String title, String message) async {
@@ -72,11 +75,6 @@ class _MoreScreenState extends State<MoreScreen> {
     );
   }
 
-  /// [action] now returns the success message to show — fix for
-  /// #12/#13, which previously ran these operations with no feedback
-  /// at all, success or failure. Exceptions thrown by the service
-  /// layer (see data_management_service.dart's new validity checks)
-  /// are now caught here and shown instead of crashing or vanishing.
   Future<void> _run(
     Future<String> Function() action, {
     String? confirmTitle,
@@ -129,6 +127,19 @@ class _MoreScreenState extends State<MoreScreen> {
                   onTap: () => Navigator.of(context).push(
                     CupertinoPageRoute(builder: (_) => const ActivityLogScreen()),
                   ),
+                ),
+                _MoreRow(
+                  icon: CupertinoIcons.arrow_down_doc,
+                  label: 'Sync System Call History',
+                  onTap: () => _run(() async {
+                    final count = await _callRepo.importSystemCallLog();
+                    return count == 0
+                        ? 'Already up to date — no new calls found.'
+                        : 'Imported $count call(s) from your phone\'s call history.\n\n'
+                            'Note: only number, name, time, and duration could be '
+                            'imported — audio recordings of past calls are not '
+                            'accessible to any app on Android.';
+                  }),
                 ),
               ],
             ),
