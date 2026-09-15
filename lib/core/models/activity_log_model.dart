@@ -7,6 +7,7 @@ enum ActivityType {
   recordingTrimmed,
   backup,
   restore,
+  callLogImported,
 }
 
 class ActivityLogModel {
