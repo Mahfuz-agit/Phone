@@ -1,12 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
+<!-- Shown by the OS for the brief moment before Flutter's first
+     frame renders. Matched to AppColors.systemBlue (#007AFF) so it
+     flows straight into our SplashScreen with no color jump. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@android:color/white" />
-
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+    <item android:drawable="@android:color/transparent" />
+    <item>
+        <color android:color="#FF007AFF"/>
+    </item>
 </layer-list>
