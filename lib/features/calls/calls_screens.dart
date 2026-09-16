@@ -2,16 +2,16 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/theme/app_theme.dart';
 import '../../core/models/call_record_model.dart';
 import '../../core/repositories/call_repository.dart';
 import '../../core/services/audio_recording_service.dart';
+import '../contacts/contacts_screens.dart';
 
 /// =====================================================================
 /// SCREEN: CallsListScreen (Recents)
-/// Chronological call list with type icons (missed/incoming/outgoing),
-/// plus a toggle to switch into "search recordings by name/date" mode.
 /// =====================================================================
 class CallsListScreen extends StatefulWidget {
   const CallsListScreen({super.key});
@@ -34,8 +34,15 @@ class _CallsListScreenState extends State<CallsListScreen> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   Future<void> _load() async {
     final calls = await _repo.getAll();
+    if (!mounted) return;
     setState(() {
       _calls = calls;
       _loading = false;
@@ -48,6 +55,7 @@ class _CallsListScreenState extends State<CallsListScreen> {
       return;
     }
     final results = await _repo.searchRecordings(query.trim());
+    if (!mounted) return;
     setState(() => _calls = results);
   }
 
@@ -62,8 +70,7 @@ class _CallsListScreenState extends State<CallsListScreen> {
     }
   }
 
-  Color _colorFor(CallType type) =>
-      type == CallType.missed ? AppColors.systemRed : AppColors.systemGreen;
+  Color _colorFor(CallType type) => type == CallType.missed ? AppColors.systemRed : AppColors.systemGreen;
 
   Future<void> _openDetail(CallRecordModel call) async {
     await Navigator.of(context).push(
@@ -150,8 +157,8 @@ class _CallsListScreenState extends State<CallsListScreen> {
 
 /// =====================================================================
 /// SCREEN: CallDetailScreen
-/// Shows call metadata plus, if a recording exists: playback controls,
-/// an inline trim range, and a rename field.
+/// Fix: previously had no Call/Message actions at all, and no way to
+/// save an unknown number as a new contact.
 /// =====================================================================
 class CallDetailScreen extends StatefulWidget {
   final String callId;
@@ -171,7 +178,7 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
   Duration _playerPosition = Duration.zero;
   bool _isPlaying = false;
 
-  RangeValues? _trimRange; // in seconds, set once duration is known
+  RangeValues? _trimRange;
   bool _trimming = false;
 
   @override
@@ -180,17 +187,25 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
     _load();
 
     _player.onDurationChanged.listen((d) {
+      if (!mounted) return;
       setState(() {
         _playerDuration = d;
         _trimRange ??= RangeValues(0, d.inSeconds.toDouble());
       });
     });
-    _player.onPositionChanged.listen((p) => setState(() => _playerPosition = p));
-    _player.onPlayerStateChanged.listen((s) => setState(() => _isPlaying = s == PlayerState.playing));
+    _player.onPositionChanged.listen((p) {
+      if (!mounted) return;
+      setState(() => _playerPosition = p);
+    });
+    _player.onPlayerStateChanged.listen((s) {
+      if (!mounted) return;
+      setState(() => _isPlaying = s == PlayerState.playing);
+    });
   }
 
   Future<void> _load() async {
     final calls = await _repo.getAll();
+    if (!mounted) return;
     final call = calls.firstWhere((c) => c.id == widget.callId);
     setState(() => _call = call);
     if (call.recordingPath != null) {
@@ -203,6 +218,48 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
       await _player.pause();
     } else {
       await _player.resume();
+    }
+  }
+
+  Future<void> _showAlert(String title, String message) async {
+    if (!mounted) return;
+    await showCupertinoDialog(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [CupertinoDialogAction(child: const Text('OK'), onPressed: () => Navigator.pop(ctx))],
+      ),
+    );
+  }
+
+  Future<void> _launchOrWarn(Uri uri) async {
+    bool launched = false;
+    try {
+      if (await canLaunchUrl(uri)) {
+        launched = await launchUrl(uri);
+      }
+    } catch (_) {
+      launched = false;
+    }
+    if (!launched) await _showAlert("Couldn't Open", 'No app available to handle this action.');
+  }
+
+  Future<void> _openContact() async {
+    final call = _call;
+    if (call == null) return;
+
+    if (call.contactId != null) {
+      await Navigator.of(context).push(
+        CupertinoPageRoute(builder: (_) => ContactDetailScreen(contactId: call.contactId!)),
+      );
+    } else {
+      final created = await Navigator.of(context).push<bool>(
+        CupertinoPageRoute(
+          builder: (_) => AddEditContactScreen(prefillPhoneNumber: call.phoneNumber),
+        ),
+      );
+      if (created == true) _load();
     }
   }
 
@@ -225,8 +282,10 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
       await _audioService.deleteFile(call.recordingPath!);
 
       await _load();
+    } catch (e) {
+      await _showAlert('Trim Failed', e.toString());
     } finally {
-      setState(() => _trimming = false);
+      if (mounted) setState(() => _trimming = false);
     }
   }
 
@@ -242,18 +301,19 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
         content: CupertinoTextField(controller: controller, placeholder: 'New file name'),
         actions: [
           CupertinoDialogAction(child: const Text('Cancel'), onPressed: () => Navigator.pop(ctx)),
-          CupertinoDialogAction(
-            child: const Text('Rename'),
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-          ),
+          CupertinoDialogAction(child: const Text('Rename'), onPressed: () => Navigator.pop(ctx, controller.text.trim())),
         ],
       ),
     );
 
     if (newName != null && newName.isNotEmpty) {
-      final newPath = await _audioService.renameFile(call!.recordingPath!, newName);
-      await _repo.renameRecording(call.id, newPath);
-      await _load();
+      try {
+        final newPath = await _audioService.renameFile(call!.recordingPath!, newName);
+        await _repo.renameRecording(call.id, newPath);
+        await _load();
+      } catch (e) {
+        await _showAlert('Rename Failed', e.toString());
+      }
     }
   }
 
@@ -290,14 +350,34 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
                       ],
                     ),
                   ),
+                  const SizedBox(height: 20),
+                  // Fix: Call/Message actions were completely missing
+                  // from this screen before.
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _QuickAction(
+                        icon: CupertinoIcons.phone_fill,
+                        label: 'Call',
+                        onTap: () => _launchOrWarn(Uri(scheme: 'tel', path: call.phoneNumber)),
+                      ),
+                      _QuickAction(
+                        icon: CupertinoIcons.chat_bubble_fill,
+                        label: 'Message',
+                        onTap: () => _launchOrWarn(Uri(scheme: 'sms', path: call.phoneNumber)),
+                      ),
+                      _QuickAction(
+                        icon: call.contactId != null ? CupertinoIcons.person_crop_circle : CupertinoIcons.person_add,
+                        label: call.contactId != null ? 'Contact' : 'Add',
+                        onTap: _openContact,
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 24),
                   if (call.recordingPath == null)
                     Container(
                       padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: AppColors.cardBackground,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
+                      decoration: BoxDecoration(color: AppColors.cardBackground, borderRadius: BorderRadius.circular(10)),
                       child: const Text('No recording for this call', style: AppTypography.subhead),
                     )
                   else
@@ -316,6 +396,34 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
                 ],
               ),
       ),
+    );
+  }
+}
+
+class _QuickAction extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _QuickAction({required this.icon, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: onTap,
+          child: Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(color: AppColors.systemGray6, borderRadius: BorderRadius.circular(14)),
+            child: Icon(icon, color: AppColors.systemBlue, size: 22),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(label, style: AppTypography.caption1),
+      ],
     );
   }
 }
@@ -345,25 +453,16 @@ class _RecordingCard extends StatelessWidget {
     required this.onRename,
   });
 
-  String _fmt(Duration d) =>
-      '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+  String _fmt(Duration d) => '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 
   @override
   Widget build(BuildContext context) {
-    // Explicit double literals + explicit cast: `.clamp()` on a
-    // double with int bounds returns `num`, which Slider/RangeSlider
-    // reject at compile time.
-    final double maxSeconds =
-        duration.inSeconds > 0 ? duration.inSeconds.toDouble() : 1.0;
-    final double positionSeconds =
-        position.inSeconds.toDouble().clamp(0.0, maxSeconds).toDouble();
+    final double maxSeconds = duration.inSeconds > 0 ? duration.inSeconds.toDouble() : 1.0;
+    final double positionSeconds = position.inSeconds.toDouble().clamp(0.0, maxSeconds).toDouble();
 
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.cardBackground,
-        borderRadius: BorderRadius.circular(10),
-      ),
+      decoration: BoxDecoration(color: AppColors.cardBackground, borderRadius: BorderRadius.circular(10)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -381,12 +480,7 @@ class _RecordingCard extends StatelessWidget {
                 ),
               ),
               Expanded(
-                child: Slider(
-                  value: positionSeconds,
-                  max: maxSeconds,
-                  onChanged: onSeek,
-                  activeColor: AppColors.systemBlue,
-                ),
+                child: Slider(value: positionSeconds, max: maxSeconds, onChanged: onSeek, activeColor: AppColors.systemBlue),
               ),
               Text('${_fmt(position)} / ${_fmt(duration)}', style: AppTypography.footnote),
             ],
@@ -418,11 +512,7 @@ class _RecordingCard extends StatelessWidget {
             onPressed: onRename,
             child: const Row(
               mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(CupertinoIcons.pencil, size: 18),
-                SizedBox(width: 6),
-                Text('Rename Recording'),
-              ],
+              children: [Icon(CupertinoIcons.pencil, size: 18), SizedBox(width: 6), Text('Rename Recording')],
             ),
           ),
         ],
