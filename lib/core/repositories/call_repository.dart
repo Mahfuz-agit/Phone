@@ -88,6 +88,36 @@ class CallRepository {
     String? recordingPath,
   }) async {
     final db = await DbHelper.instance.database;
+
+    // Defense-in-depth against duplicate state broadcasts (observed
+    // on dual-SIM devices): if an entry for this exact number + type
+    // was logged in the last 10 seconds, treat this as the same call
+    // rather than inserting a second row.
+    final recentCutoff = DateTime.now().subtract(const Duration(seconds: 10)).toIso8601String();
+    final dupes = await db.query(
+      'call_records',
+      where: 'phone_number = ? AND type = ? AND timestamp >= ?',
+      whereArgs: [phoneNumber, type.name, recentCutoff],
+      orderBy: 'timestamp DESC',
+      limit: 1,
+    );
+    if (dupes.isNotEmpty) {
+      // If this "duplicate" call actually has a recording and the
+      // stored one doesn't, attach it — better to keep the recording
+      // than silently drop it.
+      final existing = CallRecordModel.fromDbMap(dupes.first);
+      if (recordingPath != null && existing.recordingPath == null) {
+        await db.update(
+          'call_records',
+          {'recording_path': recordingPath, 'duration_seconds': durationSeconds},
+          where: 'id = ?',
+          whereArgs: [existing.id],
+        );
+        return existing.copyWith(recordingPath: recordingPath, durationSeconds: durationSeconds);
+      }
+      return existing;
+    }
+
     final call = CallRecordModel(
       id: _uuid.v4(),
       contactId: contactId,
@@ -150,36 +180,16 @@ class CallRepository {
       case syslog.CallType.blocked:
         return CallType.missed;
       default:
-        // voiceMail, answeredExternally, unknown, etc. — no exact
-        // match in our 3-value model, default to incoming rather
-        // than losing the entry entirely.
         return CallType.incoming;
     }
   }
 
-  /// Imports the phone's existing system call history (issue raised
-  /// by the user: "Calls tab is empty, I want all my call history").
-  ///
-  /// Important limitation, stated plainly: this can only import
-  /// metadata — number, name, timestamp, duration, direction. It
-  /// CANNOT import audio recordings of past calls, because no Android
-  /// API grants any app access to another app's (or the system
-  /// dialer's) recorded call audio, and a finished call cannot be
-  /// recorded retroactively. Only calls made *after* this app's
-  /// recording fix is installed and running will have audio.
-  ///
-  /// Safe to call repeatedly — every entry is deduplicated against
-  /// what's already stored (same normalized phone number within the
-  /// same minute), so re-running it just catches up on new calls.
   Future<int> importSystemCallLog() async {
     final systemEntries = await syslog.CallLog.get();
     final existing = await getAll();
     final contactRepo = ContactRepository();
     final allContacts = await contactRepo.getAll();
 
-    // Dedup key: normalized phone digits + timestamp rounded to the
-    // minute. Call duration can differ by a second or two between
-    // sources, so we don't include it in the key.
     final existingKeys = existing.map((c) {
       final digits = ContactRepository.normalizeDigits(c.phoneNumber);
       final minuteBucket = (c.timestamp.millisecondsSinceEpoch / 60000).round();
@@ -199,7 +209,6 @@ class CallRepository {
       final key = '${digits}_$minuteBucket';
       if (existingKeys.contains(key)) continue;
 
-      // Try to match against a saved contact for a friendlier name.
       String displayName = (entry.name != null && entry.name!.isNotEmpty) ? entry.name! : number;
       String? contactId;
       for (final c in allContacts) {
@@ -219,7 +228,7 @@ class CallRepository {
         type: _mapSystemType(entry.callType),
         timestamp: DateTime.fromMillisecondsSinceEpoch(tsMillis),
         durationSeconds: entry.duration ?? 0,
-        recordingPath: null, // see method doc — never available for historical calls
+        recordingPath: null,
       );
 
       await db.insert('call_records', call.toDbMap());
