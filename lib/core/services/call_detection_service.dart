@@ -8,16 +8,20 @@ import '../repositories/activity_log_repository.dart';
 import '../repositories/call_repository.dart';
 import '../repositories/contact_repository.dart';
 import 'audio_recording_service.dart';
-import 'settings_service.dart';
 
 class CallDetectionService {
   final AudioRecordingService _audio;
   final CallRepository _callRepo;
   final ContactRepository _contactRepo;
   final _activityLog = ActivityLogRepository();
-  final _settings = SettingsService();
 
   StreamSubscription<PhoneState>? _sub;
+
+  // Serializes event processing — see start(). Without this, a fast
+  // call's CALL_ENDED could run concurrently with a still-pending
+  // CALL_OUTGOING/CALL_STARTED handler, which was the root cause of
+  // both duplicate log entries AND recordings that never actually
+  // started (the stop() would fire before start() had finished).
   Future<void> _chain = Future.value();
 
   DateTime? _callStartedAt;
@@ -95,18 +99,6 @@ class CallDetectionService {
 
   Future<void> _startRecordingSafely(String callId) async {
     try {
-      // Fix: respects the Settings toggle. Call detection and history
-      // logging are unaffected either way — only the audio capture
-      // step is skipped.
-      final enabled = await _settings.isRecordingEnabled();
-      if (!enabled) {
-        await _activityLog.log(
-          type: ActivityType.call,
-          description: 'Recording skipped: disabled in Settings.',
-        );
-        return;
-      }
-
       final micStatus = await Permission.microphone.status;
       if (!micStatus.isGranted) {
         await _activityLog.log(
