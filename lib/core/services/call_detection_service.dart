@@ -8,14 +8,17 @@ import '../repositories/activity_log_repository.dart';
 import '../repositories/call_repository.dart';
 import '../repositories/contact_repository.dart';
 import 'audio_recording_service.dart';
+import 'settings_service.dart';
 
 class CallDetectionService {
   final AudioRecordingService _audio;
   final CallRepository _callRepo;
   final ContactRepository _contactRepo;
   final _activityLog = ActivityLogRepository();
+  final _settings = SettingsService();
 
   StreamSubscription<PhoneState>? _sub;
+  Future<void> _chain = Future.value();
 
   DateTime? _callStartedAt;
   String? _activeNumber;
@@ -33,7 +36,11 @@ class CallDetectionService {
 
   void start() {
     _sub = PhoneState.stream.listen(
-      _onStateChanged,
+      (state) {
+        _chain = _chain.then((_) => _handleStateChanged(state)).catchError((e) {
+          _activityLog.log(type: ActivityType.call, description: '[DEBUG] Handler error: $e');
+        });
+      },
       onError: (Object e, StackTrace st) {
         _activityLog.log(type: ActivityType.call, description: '[DEBUG] Stream error: $e');
       },
@@ -45,11 +52,7 @@ class CallDetectionService {
     _sub = null;
   }
 
-  Future<void> _onStateChanged(PhoneState state) async {
-    // TEMPORARY DIAGNOSTIC — logs every single state transition this
-    // device sends, with the exact enum name and number. Once we
-    // confirm CALL_STARTED does or doesn't fire, this block should be
-    // removed (it will otherwise clutter the Activity Log over time).
+  Future<void> _handleStateChanged(PhoneState state) async {
     await _activityLog.log(
       type: ActivityType.call,
       description: '[DEBUG] phone_state: ${state.status.name}, number: ${state.number ?? "null"}',
@@ -64,11 +67,6 @@ class CallDetectionService {
       case PhoneStateStatus.CALL_OUTGOING:
         _activeNumber = state.number;
         _activeType = CallType.outgoing;
-        // Some devices/Android versions fire CALL_OUTGOING for a
-        // dialed call but never a separate CALL_STARTED once it
-        // connects — start the clock and recording here too, as a
-        // fallback. If CALL_STARTED also fires later, the guard
-        // below (`if (_callStartedAt == null)`) prevents double work.
         if (_callStartedAt == null) {
           _callStartedAt = DateTime.now();
           _activeCallId = DateTime.now().millisecondsSinceEpoch.toString();
@@ -97,6 +95,18 @@ class CallDetectionService {
 
   Future<void> _startRecordingSafely(String callId) async {
     try {
+      // Fix: respects the Settings toggle. Call detection and history
+      // logging are unaffected either way — only the audio capture
+      // step is skipped.
+      final enabled = await _settings.isRecordingEnabled();
+      if (!enabled) {
+        await _activityLog.log(
+          type: ActivityType.call,
+          description: 'Recording skipped: disabled in Settings.',
+        );
+        return;
+      }
+
       final micStatus = await Permission.microphone.status;
       if (!micStatus.isGranted) {
         await _activityLog.log(
@@ -111,15 +121,11 @@ class CallDetectionService {
       if (path == null) {
         await _activityLog.log(
           type: ActivityType.call,
-          description: 'Recording did not start for call $callId '
-              '(startRecording returned null despite granted permission).',
+          description: 'Recording did not start for call $callId.',
         );
       } else {
         _isRecording = true;
-        await _activityLog.log(
-          type: ActivityType.call,
-          description: '[DEBUG] Recording started: $path',
-        );
+        await _activityLog.log(type: ActivityType.call, description: '[DEBUG] Recording started: $path');
       }
     } catch (e) {
       await _activityLog.log(
@@ -136,10 +142,7 @@ class CallDetectionService {
       _isRecording = false;
       return path;
     } catch (e) {
-      await _activityLog.log(
-        type: ActivityType.call,
-        description: 'Recording failed to stop cleanly: $e',
-      );
+      await _activityLog.log(type: ActivityType.call, description: 'Recording failed to stop cleanly: $e');
       _isRecording = false;
       return null;
     }
