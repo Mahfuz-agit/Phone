@@ -1,7 +1,16 @@
+import 'dart:io';
 import 'package:flutter/cupertino.dart';
+import 'package:intl/intl.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:share_plus/share_plus.dart';
 
+import '../core/repositories/activity_log_repository.dart';
 import '../core/repositories/call_repository.dart';
 import '../core/services/data_management_service.dart';
+import '../core/services/recording_foreground_task.dart';
+import '../core/services/settings_service.dart';
 import '../features/activity_log/activity_log_screen.dart';
 import '../features/calls/calls_screens.dart';
 import '../features/contacts/contacts_screens.dart';
@@ -9,10 +18,6 @@ import 'theme/app_theme.dart';
 
 /// =====================================================================
 /// ROOT SHELL
-/// Exactly two bottom tabs — Calls and Contacts — per spec. Activity
-/// Log, Backup/Restore, vCard import/export, and system call history
-/// sync all live one level deeper, behind the gear icon on the
-/// Contacts tab (see MoreScreen below).
 /// =====================================================================
 class AppShell extends StatelessWidget {
   const AppShell({super.key});
@@ -61,7 +66,58 @@ class MoreScreen extends StatefulWidget {
 class _MoreScreenState extends State<MoreScreen> {
   final _dataService = DataManagementService();
   final _callRepo = CallRepository();
+  final _activityLogRepo = ActivityLogRepository();
+  final _settings = SettingsService();
+
   bool _busy = false;
+  bool _recordingEnabled = true;
+  bool _settingsLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final enabled = await _settings.isRecordingEnabled();
+    if (!mounted) return;
+    setState(() {
+      _recordingEnabled = enabled;
+      _settingsLoaded = true;
+    });
+  }
+
+  /// Turning the toggle off stops the whole foreground service (so
+  /// the persistent notification also disappears — not just a
+  /// no-op flag). Turning it on re-checks permissions before
+  /// restarting, since they may have been revoked since app launch.
+  Future<void> _onRecordingToggle(bool value) async {
+    setState(() => _recordingEnabled = value);
+    await _settings.setRecordingEnabled(value);
+
+    if (!value) {
+      await RecordingForegroundController.stop();
+      return;
+    }
+
+    final micGranted = await Permission.microphone.isGranted;
+    final phoneGranted = await Permission.phone.isGranted;
+    if (!micGranted || !phoneGranted) {
+      final results = await [Permission.microphone, Permission.phone].request();
+      final ok = (results[Permission.microphone]?.isGranted ?? false) &&
+          (results[Permission.phone]?.isGranted ?? false);
+      if (!ok) {
+        // Revert the toggle and the stored setting — we can't
+        // honestly claim recording is "on" without permissions.
+        setState(() => _recordingEnabled = false);
+        await _settings.setRecordingEnabled(false);
+        await _showResult('Permission Needed', 'Microphone and Phone permissions are required to enable recording.');
+        return;
+      }
+    }
+    await RecordingForegroundController.start();
+  }
 
   Future<void> _showResult(String title, String message) async {
     if (!mounted) return;
@@ -110,6 +166,30 @@ class _MoreScreenState extends State<MoreScreen> {
     }
   }
 
+  /// One-tap export of every Activity Log entry (including the
+  /// temporary [DEBUG] diagnostic lines) as a plain text file, shared
+  /// immediately — quicker than the full CSV/PDF export flow when the
+  /// goal is just "send Claude what happened".
+  Future<void> _shareDebugLog() async {
+    await _run(() async {
+      final logs = await _activityLogRepo.getAll();
+      if (logs.isEmpty) return 'Activity log is empty — nothing to share.';
+
+      final buffer = StringBuffer();
+      final fmt = DateFormat('yyyy-MM-dd HH:mm:ss');
+      for (final log in logs) {
+        buffer.writeln('[${fmt.format(log.timestamp)}] ${log.type.name}: ${log.description}');
+      }
+
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File(p.join(dir.path, 'debug_log_${DateTime.now().millisecondsSinceEpoch}.txt'));
+      await file.writeAsString(buffer.toString());
+
+      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], text: 'Phonebook app debug log'));
+      return 'Debug log ready to share (${logs.length} entries).';
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
@@ -121,12 +201,35 @@ class _MoreScreenState extends State<MoreScreen> {
           children: [
             _MoreCard(
               children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: Row(
+                    children: [
+                      const Icon(CupertinoIcons.mic_fill, color: AppColors.systemBlue, size: 20),
+                      const SizedBox(width: 12),
+                      const Expanded(child: Text('Auto Call Recording', style: AppTypography.body)),
+                      _settingsLoaded
+                          ? CupertinoSwitch(value: _recordingEnabled, onChanged: _onRecordingToggle)
+                          : const CupertinoActivityIndicator(),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            _MoreCard(
+              children: [
                 _MoreRow(
                   icon: CupertinoIcons.doc_text,
                   label: 'Activity Log',
                   onTap: () => Navigator.of(context).push(
                     CupertinoPageRoute(builder: (_) => const ActivityLogScreen()),
                   ),
+                ),
+                _MoreRow(
+                  icon: CupertinoIcons.square_arrow_up_on_square,
+                  label: 'Share Debug Log',
+                  onTap: _shareDebugLog,
                 ),
                 _MoreRow(
                   icon: CupertinoIcons.arrow_down_doc,
