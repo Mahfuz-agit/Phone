@@ -11,16 +11,6 @@ import '../../app/theme/app_theme.dart';
 import '../../core/models/contact_model.dart';
 import '../../core/repositories/contact_repository.dart';
 
-// AddEditContactScreen is defined at the bottom of this same file —
-// kept together with List/Detail so the whole Contacts feature lives
-// in one file instead of three.
-
-/// =====================================================================
-/// SHARED HELPERS — alert / launch / multi-item picker
-/// Top-level (not tied to one State) so both the list (swipe-to-call)
-/// and the detail screen (quick actions) can reuse them.
-/// =====================================================================
-
 Future<void> _showAlert(BuildContext context, String title, String message) async {
   if (!context.mounted) return;
   await showCupertinoDialog(
@@ -33,11 +23,6 @@ Future<void> _showAlert(BuildContext context, String title, String message) asyn
   );
 }
 
-/// Launches [uri] and — fix for issue #31 — actually checks the
-/// return value of canLaunchUrl()/launchUrl() instead of assuming
-/// success, surfacing a clear message when nothing can handle it
-/// (e.g. manifest `<queries>` misconfigured, or emulator with no
-/// dialer/mail app installed).
 Future<void> _launchOrWarn(BuildContext context, Uri uri) async {
   bool launched = false;
   try {
@@ -52,9 +37,6 @@ Future<void> _launchOrWarn(BuildContext context, Uri uri) async {
   }
 }
 
-/// Fix for issue #32: previously the first phone/email was always
-/// used silently. Now, if there's more than one candidate, the user
-/// picks which one via an action sheet.
 Future<void> _pickAndLaunch<T>({
   required BuildContext context,
   required List<T> items,
@@ -110,13 +92,6 @@ Future<bool> _confirmDialog(BuildContext context, {required String title, requir
   return result ?? false;
 }
 
-/// =====================================================================
-/// SHARED WIDGET: ContactAvatar
-/// Fix for #35/#36: previously used a synchronous File.existsSync()
-/// check on every build (blocks the UI thread) with no handling for a
-/// corrupt/undecodable image file. Image.file's errorBuilder covers
-/// both missing AND corrupt files in one place, with no sync I/O.
-/// =====================================================================
 class ContactAvatar extends StatelessWidget {
   final ContactModel contact;
   final double size;
@@ -167,9 +142,6 @@ class ContactAvatar extends StatelessWidget {
   }
 }
 
-/// =====================================================================
-/// SCREEN: ContactsListScreen
-/// =====================================================================
 class ContactsListScreen extends StatefulWidget {
   final VoidCallback? onMoreTap;
   const ContactsListScreen({super.key, this.onMoreTap});
@@ -195,7 +167,6 @@ class _ContactsListScreenState extends State<ContactsListScreen> {
 
   @override
   void dispose() {
-    // Fix for #44 — this controller was never disposed.
     _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -207,24 +178,18 @@ class _ContactsListScreenState extends State<ContactsListScreen> {
       map.putIfAbsent(c.sectionLetter, () => []).add(c);
     }
     _sections = map;
-    // A fresh GlobalKey per letter each time the section list changes
-    // (add/delete/search) — stale keys from a previous build would
-    // point at widgets no longer in the tree.
     _sectionKeys = {for (final letter in map.keys) letter: GlobalKey()};
   }
 
   Future<void> _load() async {
     final contacts = await _repo.getAll();
-    if (!mounted) return; // fix for #8
+    if (!mounted) return;
     setState(() {
       _rebuildSections(contacts);
       _loading = false;
     });
   }
 
-  /// Delegates to ContactRepository.search(), which already handles
-  /// name/email/note matching and phone-number-format normalization
-  /// (#21, #22) — no need to duplicate that logic here.
   Future<void> _onSearchChanged(String query) async {
     final results = await _repo.search(query);
     if (!mounted) return;
@@ -242,20 +207,12 @@ class _ContactsListScreenState extends State<ContactsListScreen> {
     final changed = await Navigator.of(context).push<bool>(
       CupertinoPageRoute(builder: (_) => ContactDetailScreen(contactId: contact.id)),
     );
-    // Fix for #3/#6/#47: ContactDetailScreen now reliably returns
-    // `true` on every exit path (edit, favorite toggle, delete, and
-    // both the custom back button and the system back gesture), so
-    // this reload actually fires when something changed.
     if (changed == true) _load();
   }
 
   void _onLetterTap(String letter) {
     final ctx = _sectionKeys[letter]?.currentContext;
     if (ctx != null) {
-      // Fix for #1/#2: previously this callback was empty. Because
-      // the list below is built eagerly (not ListView.builder), every
-      // section's GlobalKey already has a mounted context to scroll
-      // to, even for sections currently off-screen.
       Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 250), curve: Curves.easeOut, alignment: 0);
     }
   }
@@ -264,7 +221,6 @@ class _ContactsListScreenState extends State<ContactsListScreen> {
     try {
       await _repo.delete(contact.id);
     } catch (e) {
-      // Fix for #29 — delete failures were silently swallowed.
       if (mounted) await _showAlert(context, 'Delete Failed', e.toString());
     } finally {
       _load();
@@ -283,8 +239,6 @@ class _ContactsListScreenState extends State<ContactsListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Fix for #26: full A-Z (+ '#') index is always shown; letters
-    // with no contacts are dimmed and disabled rather than omitted.
     final letters = _sections.keys.toList()..sort();
 
     return CupertinoPageScaffold(
@@ -311,22 +265,13 @@ class _ContactsListScreenState extends State<ContactsListScreen> {
                 children: [
                   Padding(
                     padding: const EdgeInsets.all(8),
-                    child: CupertinoSearchTextField(
-                      controller: _searchController,
-                      onChanged: _onSearchChanged,
-                    ),
+                    child: CupertinoSearchTextField(controller: _searchController, onChanged: _onSearchChanged),
                   ),
                   Expanded(
                     child: _sections.isEmpty
                         ? Center(child: Text('No contacts', style: AppTypography.subhead))
                         : Stack(
                             children: [
-                              // Built eagerly (not .builder) so every
-                              // section header has a real, mounted
-                              // GlobalKey context to scroll to — see
-                              // _onLetterTap. Fine for the scale of a
-                              // personal phonebook (hundreds, not tens
-                              // of thousands, of contacts).
                               ListView(
                                 controller: _scrollController,
                                 children: letters
@@ -344,10 +289,7 @@ class _ContactsListScreenState extends State<ContactsListScreen> {
                                 right: 2,
                                 top: 8,
                                 bottom: 8,
-                                child: _AlphabetIndex(
-                                  activeLetters: _sections.keys.toSet(),
-                                  onLetterTap: _onLetterTap,
-                                ),
+                                child: _AlphabetIndex(activeLetters: _sections.keys.toSet(), onLetterTap: _onLetterTap),
                               ),
                             ],
                           ),
@@ -393,8 +335,6 @@ class _ContactSection extends StatelessWidget {
               final contact = entry.value;
               return Column(
                 children: [
-                  // Fix for #28/#29: swipe right to call, swipe left
-                  // to delete (with confirmation + error handling).
                   Dismissible(
                     key: ValueKey(contact.id),
                     direction: DismissDirection.horizontal,
@@ -413,13 +353,9 @@ class _ContactSection extends StatelessWidget {
                     confirmDismiss: (direction) async {
                       if (direction == DismissDirection.startToEnd) {
                         await onSwipeCall(contact);
-                        return false; // never actually remove the tile for "call"
+                        return false;
                       }
-                      return _confirmDialog(
-                        context,
-                        title: 'Delete Contact',
-                        body: 'Delete ${contact.fullName}? This cannot be undone.',
-                      );
+                      return _confirmDialog(context, title: 'Delete Contact', body: 'Delete ${contact.fullName}? This cannot be undone.');
                     },
                     onDismissed: (_) => onSwipeDelete(contact),
                     child: CupertinoListTile(
@@ -432,11 +368,7 @@ class _ContactSection extends StatelessWidget {
                       onTap: () => onTap(contact),
                     ),
                   ),
-                  if (!isLast)
-                    const Padding(
-                      padding: EdgeInsets.only(left: 60),
-                      child: Divider(height: 1, color: AppColors.separator),
-                    ),
+                  if (!isLast) const Padding(padding: EdgeInsets.only(left: 60), child: Divider(height: 1, color: AppColors.separator)),
                 ],
               );
             }).toList(),
@@ -447,9 +379,6 @@ class _ContactSection extends StatelessWidget {
   }
 }
 
-/// Fix for #26: shows the complete A-Z + '#' index (like stock iOS
-/// Contacts), dimming letters with no contacts instead of hiding
-/// them, so the index shape doesn't jump around as you filter/search.
 class _AlphabetIndex extends StatelessWidget {
   final Set<String> activeLetters;
   final void Function(String) onLetterTap;
@@ -476,11 +405,7 @@ class _AlphabetIndex extends StatelessWidget {
               child: Center(
                 child: Text(
                   letter,
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: isActive ? AppColors.systemBlue : AppColors.systemGray4,
-                  ),
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: isActive ? AppColors.systemBlue : AppColors.systemGray4),
                 ),
               ),
             ),
@@ -491,9 +416,6 @@ class _AlphabetIndex extends StatelessWidget {
   }
 }
 
-/// =====================================================================
-/// SCREEN: ContactDetailScreen
-/// =====================================================================
 class ContactDetailScreen extends StatefulWidget {
   final String contactId;
   const ContactDetailScreen({super.key, required this.contactId});
@@ -516,7 +438,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
 
   Future<void> _load() async {
     final c = await _repo.getById(widget.contactId);
-    if (!mounted) return; // fix for #7
+    if (!mounted) return;
     setState(() {
       _contact = c;
       _loadedOnce = true;
@@ -534,18 +456,13 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
   }
 
   Future<void> _delete() async {
-    final confirmed = await _confirmDialog(
-      context,
-      title: 'Delete Contact',
-      body: 'This cannot be undone.',
-    );
+    final confirmed = await _confirmDialog(context, title: 'Delete Contact', body: 'This cannot be undone.');
     if (!confirmed) return;
 
     try {
       await _repo.delete(widget.contactId);
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
-      // Fix for #29 in the detail screen too.
       if (mounted) await _showAlert(context, 'Delete Failed', e.toString());
     }
   }
@@ -560,9 +477,6 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
     }
   }
 
-  /// Centralizes "leave this screen" so every exit path — the custom
-  /// back button below AND the system back gesture/button — reports
-  /// `_changed` consistently. Fixes #3/#6.
   void _handleBack() {
     Navigator.pop(context, _changed);
   }
@@ -572,10 +486,6 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
     final contact = _contact;
 
     return PopScope(
-      // We take over back-button/gesture handling ourselves so the
-      // pop always carries `_changed` — a bare PopScope(canPop: true)
-      // would let the system pop with no result, which is exactly
-      // how issues #3/#6 happened originally.
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop) _handleBack();
@@ -584,27 +494,14 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
         backgroundColor: AppColors.groupedBackground,
         navigationBar: CupertinoNavigationBar(
           middle: const Text('Contact'),
-          leading: CupertinoButton(
-            padding: EdgeInsets.zero,
-            onPressed: _handleBack,
-            child: const Icon(CupertinoIcons.back),
-          ),
-          trailing: CupertinoButton(
-            padding: EdgeInsets.zero,
-            onPressed: contact == null ? null : _openEdit,
-            child: const Text('Edit'),
-          ),
+          leading: CupertinoButton(padding: EdgeInsets.zero, onPressed: _handleBack, child: const Icon(CupertinoIcons.back)),
+          trailing: CupertinoButton(padding: EdgeInsets.zero, onPressed: contact == null ? null : _openEdit, child: const Text('Edit')),
         ),
         child: SafeArea(
           child: !_loadedOnce
               ? const Center(child: CupertinoActivityIndicator())
               : contact == null
-                  // Fix for #33/#34: distinguishes "still loading"
-                  // from "genuinely not found" (e.g. deleted from
-                  // another screen while this one was open).
-                  ? Center(
-                      child: Text('Contact not found', style: AppTypography.subhead),
-                    )
+                  ? Center(child: Text('Contact not found', style: AppTypography.subhead))
                   : ListView(
                       padding: const EdgeInsets.all(16),
                       children: [
@@ -672,7 +569,6 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
                           const SizedBox(height: 16),
                           _InfoCard(rows: contact.emails.map((e) => _InfoRow(e.label, e.email)).toList()),
                         ],
-                        // Fix for #20 — organization/address/birthday/website display.
                         if (contact.address != null && contact.address!.isNotEmpty) ...[
                           const SizedBox(height: 16),
                           _InfoCard(rows: [_InfoRow('Address', contact.address!)]),
@@ -765,9 +661,7 @@ class _InfoCard extends StatelessWidget {
                 Expanded(
                   child: Text(
                     entry.value.value,
-                    style: onRowTap != null
-                        ? AppTypography.body.copyWith(color: AppColors.systemBlue)
-                        : AppTypography.body,
+                    style: onRowTap != null ? AppTypography.body.copyWith(color: AppColors.systemBlue) : AppTypography.body,
                   ),
                 ),
               ],
@@ -785,12 +679,11 @@ class _InfoCard extends StatelessWidget {
   }
 }
 
-/// =====================================================================
-/// SCREEN: AddEditContactScreen
-/// =====================================================================
 class AddEditContactScreen extends StatefulWidget {
   final ContactModel? existing;
-  const AddEditContactScreen({super.key, this.existing});
+  final String? prefillPhoneNumber;
+
+  const AddEditContactScreen({super.key, this.existing, this.prefillPhoneNumber});
 
   bool get isEditing => existing != null;
 
@@ -817,7 +710,7 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
   DateTime? _birthday;
 
   bool _saving = false;
-  String? _firstNameError; // fix for #9
+  String? _firstNameError;
 
   static const _phoneLabels = ['mobile', 'home', 'work', 'other'];
   static const _emailLabels = ['home', 'work', 'icloud', 'other'];
@@ -835,8 +728,18 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
     _photoPath = e?.photoPath;
     _birthday = e?.birthday;
 
-    _phones = List.of(e?.phones ?? const [PhoneEntry(label: 'mobile', number: '')]);
-    _emails = List.of(e?.emails ?? const []);
+    if (e != null) {
+      _phones = List.of(e.phones);
+      _emails = List.of(e.emails);
+    } else if (widget.prefillPhoneNumber != null && widget.prefillPhoneNumber!.isNotEmpty) {
+      _phones = [PhoneEntry(label: 'mobile', number: widget.prefillPhoneNumber!)];
+      _emails = [];
+    } else {
+      _phones = const [PhoneEntry(label: 'mobile', number: '')];
+      _emails = [];
+    }
+    if (_phones.isEmpty) _phones = const [PhoneEntry(label: 'mobile', number: '')];
+
     _phoneControllers = _phones.map((p) => TextEditingController(text: p.number)).toList();
     _emailControllers = _emails.map((em) => TextEditingController(text: em.email)).toList();
   }
@@ -872,8 +775,6 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
     });
   }
 
-  // Fix for #17 — there was previously no way to remove a phone/email
-  // row once added.
   void _removePhoneField(int index) {
     setState(() {
       _phones.removeAt(index);
@@ -888,21 +789,13 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
     });
   }
 
-  // Fix for #16 — labels were hardcoded to 'mobile'/'home' with no
-  // way to change them.
   Future<void> _pickPhoneLabel(int index) async {
     final selected = await showCupertinoModalPopup<String>(
       context: context,
       builder: (ctx) => CupertinoActionSheet(
         title: const Text('Label'),
-        actions: _phoneLabels
-            .map((l) => CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, l), child: Text(l)))
-            .toList(),
-        cancelButton: CupertinoActionSheetAction(
-          isDefaultAction: true,
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('Cancel'),
-        ),
+        actions: _phoneLabels.map((l) => CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, l), child: Text(l))).toList(),
+        cancelButton: CupertinoActionSheetAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
       ),
     );
     if (selected != null) {
@@ -915,14 +808,8 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
       context: context,
       builder: (ctx) => CupertinoActionSheet(
         title: const Text('Label'),
-        actions: _emailLabels
-            .map((l) => CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, l), child: Text(l)))
-            .toList(),
-        cancelButton: CupertinoActionSheetAction(
-          isDefaultAction: true,
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('Cancel'),
-        ),
+        actions: _emailLabels.map((l) => CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, l), child: Text(l))).toList(),
+        cancelButton: CupertinoActionSheetAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
       ),
     );
     if (selected != null) {
@@ -930,7 +817,6 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
     }
   }
 
-  // Fix for #19 — photo add/change/remove.
   Future<void> _changePhoto() async {
     final hasPhoto = _photoPath != null;
     final action = await showCupertinoModalPopup<String>(
@@ -939,17 +825,9 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
         actions: [
           CupertinoActionSheetAction(onPressed: () => Navigator.pop(ctx, 'pick'), child: const Text('Choose Photo')),
           if (hasPhoto)
-            CupertinoActionSheetAction(
-              isDestructiveAction: true,
-              onPressed: () => Navigator.pop(ctx, 'remove'),
-              child: const Text('Remove Photo'),
-            ),
+            CupertinoActionSheetAction(isDestructiveAction: true, onPressed: () => Navigator.pop(ctx, 'remove'), child: const Text('Remove Photo')),
         ],
-        cancelButton: CupertinoActionSheetAction(
-          isDefaultAction: true,
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('Cancel'),
-        ),
+        cancelButton: CupertinoActionSheetAction(isDefaultAction: true, onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
       ),
     );
 
@@ -1014,8 +892,6 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
   }
 
   Future<void> _save() async {
-    // Fix for #9/#49 — validation with a visible reason, instead of
-    // silently doing nothing when first name is empty.
     if (_firstName.text.trim().isEmpty) {
       setState(() => _firstNameError = 'First name is required');
       return;
@@ -1067,9 +943,6 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
 
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
-      // Fix for #10/#11 — a failed save previously left `_saving`
-      // stuck true forever with no feedback, since there was no
-      // try/catch at all.
       if (mounted) await _showAlert(context, 'Save Failed', e.toString());
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -1081,18 +954,12 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
     return CupertinoPageScaffold(
       backgroundColor: AppColors.groupedBackground,
       navigationBar: CupertinoNavigationBar(
-        leading: CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cancel'),
-        ),
+        leading: CupertinoButton(padding: EdgeInsets.zero, onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
         middle: Text(widget.isEditing ? 'Edit Contact' : 'New Contact'),
         trailing: CupertinoButton(
           padding: EdgeInsets.zero,
           onPressed: _saving ? null : _save,
-          child: _saving
-              ? const CupertinoActivityIndicator()
-              : const Text('Done', style: TextStyle(fontWeight: FontWeight.w600)),
+          child: _saving ? const CupertinoActivityIndicator() : const Text('Done', style: TextStyle(fontWeight: FontWeight.w600)),
         ),
       ),
       child: SafeArea(
@@ -1154,10 +1021,7 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
                       children: [
                         GestureDetector(
                           onTap: () => _pickPhoneLabel(i),
-                          child: SizedBox(
-                            width: 70,
-                            child: Text(_phones[i].label, style: AppTypography.footnote.copyWith(color: AppColors.systemBlue)),
-                          ),
+                          child: SizedBox(width: 70, child: Text(_phones[i].label, style: AppTypography.footnote.copyWith(color: AppColors.systemBlue))),
                         ),
                         Expanded(
                           child: CupertinoTextField(
@@ -1176,11 +1040,7 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
                       ],
                     ),
                   ),
-                CupertinoButton(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  onPressed: _addPhoneField,
-                  child: const Text('+ Add phone'),
-                ),
+                CupertinoButton(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4), onPressed: _addPhoneField, child: const Text('+ Add phone')),
               ],
             ),
             const SizedBox(height: 16),
@@ -1193,10 +1053,7 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
                       children: [
                         GestureDetector(
                           onTap: () => _pickEmailLabel(i),
-                          child: SizedBox(
-                            width: 70,
-                            child: Text(_emails[i].label, style: AppTypography.footnote.copyWith(color: AppColors.systemBlue)),
-                          ),
+                          child: SizedBox(width: 70, child: Text(_emails[i].label, style: AppTypography.footnote.copyWith(color: AppColors.systemBlue))),
                         ),
                         Expanded(
                           child: CupertinoTextField(
@@ -1215,15 +1072,10 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
                       ],
                     ),
                   ),
-                CupertinoButton(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  onPressed: _addEmailField,
-                  child: const Text('+ Add email'),
-                ),
+                CupertinoButton(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4), onPressed: _addEmailField, child: const Text('+ Add email')),
               ],
             ),
             const SizedBox(height: 16),
-            // Fix for #20 — organization / address / birthday / website fields.
             _FormCard(
               children: [
                 CupertinoTextField(
@@ -1256,10 +1108,7 @@ class _AddEditContactScreenState extends State<AddEditContactScreen> {
                     children: [
                       const Text('Birthday', style: TextStyle(color: AppColors.label)),
                       const Spacer(),
-                      Text(
-                        _birthday == null ? 'Not set' : DateFormat.yMMMd().format(_birthday!),
-                        style: AppTypography.subhead,
-                      ),
+                      Text(_birthday == null ? 'Not set' : DateFormat.yMMMd().format(_birthday!), style: AppTypography.subhead),
                     ],
                   ),
                 ),
