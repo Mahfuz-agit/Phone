@@ -3,11 +3,13 @@ import '../database/db_helper.dart';
 import '../models/activity_log_model.dart';
 import '../models/contact_model.dart';
 import '../services/csv_sync_service.dart';
+import '../services/public_mirror_service.dart';
 import 'activity_log_repository.dart';
 
 class ContactRepository {
   final _uuid = const Uuid();
   final _csvSync = CsvSyncService();
+  final _publicMirror = PublicMirrorService();
   final _activityLog = ActivityLogRepository();
 
   Future<List<ContactModel>> getAll() async {
@@ -23,16 +25,8 @@ class ContactRepository {
     return ContactModel.fromDbMap(rows.first);
   }
 
-  /// Strips everything except digits, so "+880 177-405 7439" and
-  /// "01774057439" can be compared meaningfully. Used for both the
-  /// search box (#22) and duplicate detection during vCard import.
   static String normalizeDigits(String input) => input.replaceAll(RegExp(r'\D'), '');
 
-  /// Searches name, phone, email, and note (#21). Phone matching is
-  /// done two ways: a plain SQL LIKE (fast, catches exact substrings)
-  /// plus an in-memory digits-only comparison (catches formatting
-  /// differences the LIKE would miss, e.g. searching "1774057439"
-  /// should find "+880 1774-057439").
   Future<List<ContactModel>> search(String query) async {
     final trimmed = query.trim();
     if (trimmed.isEmpty) return getAll();
@@ -52,9 +46,7 @@ class ContactRepository {
       final all = await getAll();
       for (final c in all) {
         if (matchedIds.contains(c.id)) continue;
-        final hasDigitMatch = c.phones.any(
-          (p) => normalizeDigits(p.number).contains(queryDigits),
-        );
+        final hasDigitMatch = c.phones.any((p) => normalizeDigits(p.number).contains(queryDigits));
         if (hasDigitMatch) {
           results.add(c);
           matchedIds.add(c.id);
@@ -68,17 +60,10 @@ class ContactRepository {
 
   Future<List<ContactModel>> getFavorites() async {
     final db = await DbHelper.instance.database;
-    final rows = await db.query(
-      'contacts',
-      where: 'is_favorite = 1',
-      orderBy: 'first_name COLLATE NOCASE ASC',
-    );
+    final rows = await db.query('contacts', where: 'is_favorite = 1', orderBy: 'first_name COLLATE NOCASE ASC');
     return rows.map((r) => ContactModel.fromDbMap(r)).toList();
   }
 
-  /// Finds an existing contact sharing at least one phone number
-  /// (compared digit-only) with the given list — used by vCard
-  /// import to detect duplicates (issue #14).
   Future<ContactModel?> findByAnyPhone(List<PhoneEntry> phones) async {
     if (phones.isEmpty) return null;
     final targetDigits = phones.map((p) => normalizeDigits(p.number)).where((d) => d.isNotEmpty).toSet();
@@ -126,13 +111,13 @@ class ContactRepository {
       contactId: contact.id,
       description: 'Added contact ${contact.fullName}',
     );
-    await _syncCsv();
+    await _syncMirrors();
     return contact;
   }
 
   Future<void> update(ContactModel contact) async {
     final db = await DbHelper.instance.database;
-    final updated = contact.copyWith(); // refreshes updatedAt
+    final updated = contact.copyWith();
     await db.update('contacts', updated.toDbMap(), where: 'id = ?', whereArgs: [contact.id]);
 
     await _activityLog.log(
@@ -140,7 +125,7 @@ class ContactRepository {
       contactId: contact.id,
       description: 'Edited contact ${contact.fullName}',
     );
-    await _syncCsv();
+    await _syncMirrors();
   }
 
   Future<void> toggleFavorite(String id) async {
@@ -159,15 +144,22 @@ class ContactRepository {
       contactId: id,
       description: 'Deleted contact ${contact?.fullName ?? id}',
     );
-    await _syncCsv();
+    await _syncMirrors();
   }
 
-  Future<void> _syncCsv() async {
+  /// Refreshes both mirrors: the human-readable CSV (unchanged from
+  /// before) and the new public JSON backup (contacts + activity
+  /// log). Piggybacking the activity-log mirror here — rather than on
+  /// every single ActivityLogRepository.log() call — avoids writing
+  /// that file on every noisy [DEBUG] entry during an active call.
+  Future<void> _syncMirrors() async {
     final all = await getAll();
     await _csvSync.syncContacts(all);
+    await _publicMirror.mirrorContacts(all.map((c) => c.toDbMap()).toList());
+
+    final logs = await _activityLog.getAll();
+    await _publicMirror.mirrorActivityLogs(logs.map((l) => l.toDbMap()).toList());
   }
 
-  /// Exposed so a manual "Sync now" button or Backup flow can force
-  /// a rewrite without going through a contact mutation.
-  Future<void> forceSyncCsv() => _syncCsv();
+  Future<void> forceSyncCsv() => _syncMirrors();
 }
