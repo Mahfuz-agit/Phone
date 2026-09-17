@@ -9,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import '../core/repositories/activity_log_repository.dart';
 import '../core/repositories/call_repository.dart';
 import '../core/services/data_management_service.dart';
+import '../core/services/public_mirror_service.dart';
 import '../core/services/recording_foreground_task.dart';
 import '../core/services/settings_service.dart';
 import '../features/activity_log/activity_log_screen.dart';
@@ -16,9 +17,6 @@ import '../features/calls/calls_screens.dart';
 import '../features/contacts/contacts_screens.dart';
 import 'theme/app_theme.dart';
 
-/// =====================================================================
-/// ROOT SHELL
-/// =====================================================================
 class AppShell extends StatelessWidget {
   const AppShell({super.key});
 
@@ -53,9 +51,6 @@ class AppShell extends StatelessWidget {
   }
 }
 
-/// =====================================================================
-/// SCREEN: MoreScreen
-/// =====================================================================
 class MoreScreen extends StatefulWidget {
   const MoreScreen({super.key});
 
@@ -68,15 +63,18 @@ class _MoreScreenState extends State<MoreScreen> {
   final _callRepo = CallRepository();
   final _activityLogRepo = ActivityLogRepository();
   final _settings = SettingsService();
+  final _publicMirror = PublicMirrorService();
 
   bool _busy = false;
   bool _recordingEnabled = true;
   bool _settingsLoaded = false;
+  String? _mirrorPath;
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
+    _loadMirrorPath();
   }
 
   Future<void> _loadSettings() async {
@@ -88,10 +86,12 @@ class _MoreScreenState extends State<MoreScreen> {
     });
   }
 
-  /// Turning the toggle off stops the whole foreground service (so
-  /// the persistent notification also disappears — not just a
-  /// no-op flag). Turning it on re-checks permissions before
-  /// restarting, since they may have been revoked since app launch.
+  Future<void> _loadMirrorPath() async {
+    final path = await _publicMirror.mirrorFolderPath();
+    if (!mounted) return;
+    setState(() => _mirrorPath = path);
+  }
+
   Future<void> _onRecordingToggle(bool value) async {
     setState(() => _recordingEnabled = value);
     await _settings.setRecordingEnabled(value);
@@ -108,8 +108,6 @@ class _MoreScreenState extends State<MoreScreen> {
       final ok = (results[Permission.microphone]?.isGranted ?? false) &&
           (results[Permission.phone]?.isGranted ?? false);
       if (!ok) {
-        // Revert the toggle and the stored setting — we can't
-        // honestly claim recording is "on" without permissions.
         setState(() => _recordingEnabled = false);
         await _settings.setRecordingEnabled(false);
         await _showResult('Permission Needed', 'Microphone and Phone permissions are required to enable recording.');
@@ -166,10 +164,6 @@ class _MoreScreenState extends State<MoreScreen> {
     }
   }
 
-  /// One-tap export of every Activity Log entry (including the
-  /// temporary [DEBUG] diagnostic lines) as a plain text file, shared
-  /// immediately — quicker than the full CSV/PDF export flow when the
-  /// goal is just "send Claude what happened".
   Future<void> _shareDebugLog() async {
     await _run(() async {
       final logs = await _activityLogRepo.getAll();
@@ -222,15 +216,9 @@ class _MoreScreenState extends State<MoreScreen> {
                 _MoreRow(
                   icon: CupertinoIcons.doc_text,
                   label: 'Activity Log',
-                  onTap: () => Navigator.of(context).push(
-                    CupertinoPageRoute(builder: (_) => const ActivityLogScreen()),
-                  ),
+                  onTap: () => Navigator.of(context).push(CupertinoPageRoute(builder: (_) => const ActivityLogScreen())),
                 ),
-                _MoreRow(
-                  icon: CupertinoIcons.square_arrow_up_on_square,
-                  label: 'Share Debug Log',
-                  onTap: _shareDebugLog,
-                ),
+                _MoreRow(icon: CupertinoIcons.square_arrow_up_on_square, label: 'Share Debug Log', onTap: _shareDebugLog),
                 _MoreRow(
                   icon: CupertinoIcons.arrow_down_doc,
                   label: 'Sync System Call History',
@@ -250,6 +238,33 @@ class _MoreScreenState extends State<MoreScreen> {
             _MoreCard(
               children: [
                 _MoreRow(
+                  icon: CupertinoIcons.folder,
+                  label: 'Restore from Local Backup Files',
+                  onTap: () => _run(() async {
+                    final result = await _publicMirror.restoreFromMirror();
+                    if (result.contacts == 0 && result.calls == 0 && result.logs == 0) {
+                      return 'No new data found in the backup files — everything is already here (or no backup exists yet).';
+                    }
+                    return 'Restored ${result.contacts} contact(s), ${result.calls} call(s), '
+                        'and ${result.logs} activity log entr${result.logs == 1 ? 'y' : 'ies'} '
+                        'from the local backup files.';
+                  }),
+                ),
+              ],
+            ),
+            if (_mirrorPath != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 4, top: 8),
+                child: Text(
+                  'Your data is auto-backed up as plain files here, and survives '
+                  'uninstalling the app:\n$_mirrorPath',
+                  style: AppTypography.caption1,
+                ),
+              ),
+            const SizedBox(height: 16),
+            _MoreCard(
+              children: [
+                _MoreRow(
                   icon: CupertinoIcons.square_arrow_up,
                   label: 'Export Contacts (.vcf)',
                   onTap: () => _run(() async {
@@ -265,8 +280,7 @@ class _MoreScreenState extends State<MoreScreen> {
                     if (result.imported == 0 && result.skippedDuplicates == 0) {
                       return 'No file selected.';
                     }
-                    return 'Imported ${result.imported} contact(s). '
-                        'Skipped ${result.skippedDuplicates} duplicate(s).';
+                    return 'Imported ${result.imported} contact(s). Skipped ${result.skippedDuplicates} duplicate(s).';
                   }),
                 ),
               ],
@@ -276,7 +290,7 @@ class _MoreScreenState extends State<MoreScreen> {
               children: [
                 _MoreRow(
                   icon: CupertinoIcons.cloud_upload,
-                  label: 'Backup App Data',
+                  label: 'Backup App Data (.zip)',
                   onTap: () => _run(() async {
                     await _dataService.createBackup();
                     return 'Backup created and ready to share.';
@@ -284,7 +298,7 @@ class _MoreScreenState extends State<MoreScreen> {
                 ),
                 _MoreRow(
                   icon: CupertinoIcons.cloud_download,
-                  label: 'Restore from Backup',
+                  label: 'Restore from .zip Backup',
                   onTap: () => _run(
                     () async {
                       final ok = await _dataService.restoreBackup();
@@ -297,10 +311,7 @@ class _MoreScreenState extends State<MoreScreen> {
               ],
             ),
             if (_busy)
-              const Padding(
-                padding: EdgeInsets.only(top: 24),
-                child: Center(child: CupertinoActivityIndicator()),
-              ),
+              const Padding(padding: EdgeInsets.only(top: 24), child: Center(child: CupertinoActivityIndicator())),
           ],
         ),
       ),
