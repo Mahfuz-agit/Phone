@@ -3,12 +3,14 @@ import 'package:uuid/uuid.dart';
 import '../database/db_helper.dart';
 import '../models/activity_log_model.dart';
 import '../models/call_record_model.dart';
+import '../services/public_mirror_service.dart';
 import 'activity_log_repository.dart';
 import 'contact_repository.dart';
 
 class CallRepository {
   final _uuid = const Uuid();
   final _activityLog = ActivityLogRepository();
+  final _publicMirror = PublicMirrorService();
 
   Future<List<CallRecordModel>> getAll() async {
     final db = await DbHelper.instance.database;
@@ -18,12 +20,7 @@ class CallRepository {
 
   Future<List<CallRecordModel>> getByContact(String contactId) async {
     final db = await DbHelper.instance.database;
-    final rows = await db.query(
-      'call_records',
-      where: 'contact_id = ?',
-      whereArgs: [contactId],
-      orderBy: 'timestamp DESC',
-    );
+    final rows = await db.query('call_records', where: 'contact_id = ?', whereArgs: [contactId], orderBy: 'timestamp DESC');
     return rows.map((r) => CallRecordModel.fromDbMap(r)).toList();
   }
 
@@ -79,6 +76,11 @@ class CallRepository {
     return rows.map((r) => CallRecordModel.fromDbMap(r)).toList();
   }
 
+  Future<void> _syncMirror() async {
+    final calls = await getAll();
+    await _publicMirror.mirrorCalls(calls.map((c) => c.toDbMap()).toList());
+  }
+
   Future<CallRecordModel> logCall({
     String? contactId,
     required String phoneNumber,
@@ -89,10 +91,6 @@ class CallRepository {
   }) async {
     final db = await DbHelper.instance.database;
 
-    // Defense-in-depth against duplicate state broadcasts (observed
-    // on dual-SIM devices): if an entry for this exact number + type
-    // was logged in the last 10 seconds, treat this as the same call
-    // rather than inserting a second row.
     final recentCutoff = DateTime.now().subtract(const Duration(seconds: 10)).toIso8601String();
     final dupes = await db.query(
       'call_records',
@@ -102,9 +100,6 @@ class CallRepository {
       limit: 1,
     );
     if (dupes.isNotEmpty) {
-      // If this "duplicate" call actually has a recording and the
-      // stored one doesn't, attach it — better to keep the recording
-      // than silently drop it.
       final existing = CallRecordModel.fromDbMap(dupes.first);
       if (recordingPath != null && existing.recordingPath == null) {
         await db.update(
@@ -113,6 +108,7 @@ class CallRepository {
           where: 'id = ?',
           whereArgs: [existing.id],
         );
+        await _syncMirror();
         return existing.copyWith(recordingPath: recordingPath, durationSeconds: durationSeconds);
       }
       return existing;
@@ -136,12 +132,14 @@ class CallRepository {
       description: '${type.name[0].toUpperCase()}${type.name.substring(1)} call '
           'with $displayName (${durationSeconds}s)',
     );
+    await _syncMirror();
     return call;
   }
 
   Future<void> attachRecording(String callId, String recordingPath) async {
     final db = await DbHelper.instance.database;
     await db.update('call_records', {'recording_path': recordingPath}, where: 'id = ?', whereArgs: [callId]);
+    await _syncMirror();
   }
 
   Future<void> renameRecording(String callId, String newPath) async {
@@ -152,6 +150,7 @@ class CallRepository {
       contactId: null,
       description: 'Renamed recording for call $callId',
     );
+    await _syncMirror();
   }
 
   Future<void> markTrimmed(String callId, int newDurationSeconds) async {
@@ -162,11 +161,13 @@ class CallRepository {
       contactId: null,
       description: 'Trimmed recording for call $callId',
     );
+    await _syncMirror();
   }
 
   Future<void> delete(String id) async {
     final db = await DbHelper.instance.database;
     await db.delete('call_records', where: 'id = ?', whereArgs: [id]);
+    await _syncMirror();
   }
 
   CallType _mapSystemType(syslog.CallType? type) {
@@ -241,6 +242,7 @@ class CallRepository {
         type: ActivityType.callLogImported,
         description: 'Imported $imported call(s) from system call history',
       );
+      await _syncMirror();
     }
 
     return imported;
