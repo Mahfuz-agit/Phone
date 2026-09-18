@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:phone_state/phone_state.dart';
 
@@ -8,20 +9,16 @@ import '../repositories/activity_log_repository.dart';
 import '../repositories/call_repository.dart';
 import '../repositories/contact_repository.dart';
 import 'audio_recording_service.dart';
+import 'settings_service.dart';
 
 class CallDetectionService {
   final AudioRecordingService _audio;
   final CallRepository _callRepo;
   final ContactRepository _contactRepo;
   final _activityLog = ActivityLogRepository();
+  final _settings = SettingsService();
 
   StreamSubscription<PhoneState>? _sub;
-
-  // Serializes event processing — see start(). Without this, a fast
-  // call's CALL_ENDED could run concurrently with a still-pending
-  // CALL_OUTGOING/CALL_STARTED handler, which was the root cause of
-  // both duplicate log entries AND recordings that never actually
-  // started (the stop() would fire before start() had finished).
   Future<void> _chain = Future.value();
 
   DateTime? _callStartedAt;
@@ -99,31 +96,30 @@ class CallDetectionService {
 
   Future<void> _startRecordingSafely(String callId) async {
     try {
+      final enabled = await _settings.isRecordingEnabled();
+      if (!enabled) {
+        await _activityLog.log(type: ActivityType.call, description: 'Recording skipped: disabled in Settings.');
+        return;
+      }
+
       final micStatus = await Permission.microphone.status;
       if (!micStatus.isGranted) {
         await _activityLog.log(
           type: ActivityType.call,
-          description: 'Recording skipped: microphone permission not granted '
-              '(status: ${micStatus.name}).',
+          description: 'Recording skipped: microphone permission not granted (status: ${micStatus.name}).',
         );
         return;
       }
 
       final path = await _audio.startRecording(callId);
       if (path == null) {
-        await _activityLog.log(
-          type: ActivityType.call,
-          description: 'Recording did not start for call $callId.',
-        );
+        await _activityLog.log(type: ActivityType.call, description: 'Recording did not start for call $callId.');
       } else {
         _isRecording = true;
         await _activityLog.log(type: ActivityType.call, description: '[DEBUG] Recording started: $path');
       }
     } catch (e) {
-      await _activityLog.log(
-        type: ActivityType.call,
-        description: 'Recording failed to start for call $callId: $e',
-      );
+      await _activityLog.log(type: ActivityType.call, description: 'Recording failed to start for call $callId: $e');
     }
   }
 
@@ -141,6 +137,22 @@ class CallDetectionService {
   }
 
   Future<void> _finishCall() async {
+    // Fix: this is the "Unknown call" bug. If we never received a
+    // CALL_INCOMING/CALL_OUTGOING/CALL_STARTED before this CALL_ENDED
+    // — i.e. we have neither a number nor a type — this is almost
+    // certainly a spurious state event (e.g. fired once when the
+    // foreground service's listener first attaches), not a real
+    // call. Log it for visibility and skip creating a call record.
+    if (_activeType == null && _activeNumber == null) {
+      await _activityLog.log(
+        type: ActivityType.call,
+        description: '[DEBUG] Ignored CALL_ENDED with no prior number/type (likely a spurious event, not a real call).',
+      );
+      _callStartedAt = null;
+      _activeCallId = null;
+      return;
+    }
+
     final recordingPath = await _stopRecordingSafely();
 
     final number = _activeNumber ?? 'Unknown';
@@ -166,6 +178,18 @@ class CallDetectionService {
       durationSeconds: duration,
       recordingPath: recordingPath,
     );
+
+    // Fix: signals the main UI isolate that data changed, since this
+    // whole service runs inside flutter_foreground_task's separate
+    // background isolate — without this, CallsListScreen had no way
+    // to know new data existed until the app was fully restarted.
+    try {
+      FlutterForegroundTask.sendDataToMain('call_logged');
+    } catch (_) {
+      // Best-effort — if the main isolate isn't listening yet (e.g.
+      // very early in startup), the call is still safely in the DB
+      // and will show up on next natural reload.
+    }
 
     _callStartedAt = null;
     _activeNumber = null;
