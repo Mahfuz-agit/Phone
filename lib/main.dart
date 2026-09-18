@@ -1,20 +1,19 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'app/app_shell.dart';
 import 'app/splash_screen.dart';
 import 'app/theme/app_theme.dart';
 import 'core/database/db_helper.dart';
+import 'core/repositories/call_repository.dart';
+import 'core/services/public_mirror_service.dart';
 import 'core/services/recording_foreground_task.dart';
+import 'core/services/refresh_bus.dart';
 import 'core/services/settings_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // Fix: previously all of this ran with `await` BEFORE runApp(),
-  // meaning the very first frame the user saw was whatever blank
-  // frame the OS shows while Dart is still busy — on a slow phone
-  // that reads as a frozen/janky launch. Now the splash renders on
-  // the first frame, and initialization happens underneath it.
   runApp(const PhonebookApp());
 }
 
@@ -45,10 +44,6 @@ class PhonebookApp extends StatelessWidget {
   }
 }
 
-/// Shows SplashScreen immediately, runs all startup work in the
-/// background, then cross-fades into AppShell once ready. This is
-/// the piece that actually fixes "slow phone feels janky on open" —
-/// there's always something visible and animating from frame one.
 class AppStartup extends StatefulWidget {
   const AppStartup({super.key});
 
@@ -69,11 +64,42 @@ class _AppStartupState extends State<AppStartup> {
     await DbHelper.instance.database;
     await RecordingForegroundController.init();
 
+    // Fix: bridges the background foreground-service isolate (where
+    // CallDetectionService actually runs) back to this, the main UI
+    // isolate. Every time the background side logs a call, it calls
+    // FlutterForegroundTask.sendDataToMain(...), which arrives here
+    // and bumps RefreshBus so any listening screen reloads instantly
+    // — this is what makes Calls update live instead of only after
+    // an app restart.
+    FlutterForegroundTask.addTaskDataCallback((data) {
+      RefreshBus.notify();
+    });
+
+    // Fix: two-way sync with the public mirror files, fully
+    // automatic — no manual "Restore" tap needed. Runs first so any
+    // edits made directly to the JSON files (or data recovered after
+    // a reinstall) are merged in before the UI loads.
+    try {
+      await PublicMirrorService().restoreFromMirror();
+    } catch (_) {
+      // Best-effort — a missing/corrupt mirror file shouldn't block
+      // startup; the app just proceeds with whatever's in the DB.
+    }
+
     final granted = await _requestRuntimePermissions();
     if (granted) {
       final recordingEnabled = await SettingsService().isRecordingEnabled();
       if (recordingEnabled) {
         await RecordingForegroundController.start();
+      }
+
+      // Fix: system call history sync is now automatic on every
+      // launch — the manual "Sync System Call History" button was
+      // removed from Settings.
+      try {
+        await CallRepository().importSystemCallLog();
+      } catch (_) {
+        // Best-effort — shouldn't block startup either.
       }
     }
 
