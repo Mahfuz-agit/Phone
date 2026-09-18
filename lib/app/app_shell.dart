@@ -7,7 +7,6 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../core/repositories/activity_log_repository.dart';
-import '../core/repositories/call_repository.dart';
 import '../core/services/data_management_service.dart';
 import '../core/services/public_mirror_service.dart';
 import '../core/services/recording_foreground_task.dart';
@@ -60,7 +59,6 @@ class MoreScreen extends StatefulWidget {
 
 class _MoreScreenState extends State<MoreScreen> {
   final _dataService = DataManagementService();
-  final _callRepo = CallRepository();
   final _activityLogRepo = ActivityLogRepository();
   final _settings = SettingsService();
   final _publicMirror = PublicMirrorService();
@@ -219,19 +217,6 @@ class _MoreScreenState extends State<MoreScreen> {
                   onTap: () => Navigator.of(context).push(CupertinoPageRoute(builder: (_) => const ActivityLogScreen())),
                 ),
                 _MoreRow(icon: CupertinoIcons.square_arrow_up_on_square, label: 'Share Debug Log', onTap: _shareDebugLog),
-                _MoreRow(
-                  icon: CupertinoIcons.arrow_down_doc,
-                  label: 'Sync System Call History',
-                  onTap: () => _run(() async {
-                    final count = await _callRepo.importSystemCallLog();
-                    return count == 0
-                        ? 'Already up to date — no new calls found.'
-                        : 'Imported $count call(s) from your phone\'s call history.\n\n'
-                            'Note: only number, name, time, and duration could be '
-                            'imported — audio recordings of past calls are not '
-                            'accessible to any app on Android.';
-                  }),
-                ),
               ],
             ),
             const SizedBox(height: 16),
@@ -256,8 +241,8 @@ class _MoreScreenState extends State<MoreScreen> {
               Padding(
                 padding: const EdgeInsets.only(left: 4, top: 8),
                 child: Text(
-                  'Your data is auto-backed up as plain files here, and survives '
-                  'uninstalling the app:\n$_mirrorPath',
+                  'Your data auto-syncs to plain files here (both ways, on every '
+                  'app launch), and survives uninstalling the app:\n$_mirrorPath',
                   style: AppTypography.caption1,
                 ),
               ),
