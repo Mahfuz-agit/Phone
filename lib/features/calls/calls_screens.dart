@@ -8,11 +8,9 @@ import '../../app/theme/app_theme.dart';
 import '../../core/models/call_record_model.dart';
 import '../../core/repositories/call_repository.dart';
 import '../../core/services/audio_recording_service.dart';
+import '../../core/services/refresh_bus.dart';
 import '../contacts/contacts_screens.dart';
 
-/// =====================================================================
-/// SCREEN: CallsListScreen (Recents)
-/// =====================================================================
 class CallsListScreen extends StatefulWidget {
   const CallsListScreen({super.key});
 
@@ -32,12 +30,22 @@ class _CallsListScreenState extends State<CallsListScreen> {
   void initState() {
     super.initState();
     _load();
+    // Fix: live-refresh when the background isolate logs a new call
+    // — see main.dart's FlutterForegroundTask.addTaskDataCallback.
+    RefreshBus.tick.addListener(_onRefreshSignal);
   }
 
   @override
   void dispose() {
+    RefreshBus.tick.removeListener(_onRefreshSignal);
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _onRefreshSignal() {
+    // Don't clobber an active recording search with a background
+    // refresh — only auto-reload the plain list view.
+    if (mounted && !_searchingRecordings) _load();
   }
 
   Future<void> _load() async {
@@ -57,6 +65,40 @@ class _CallsListScreenState extends State<CallsListScreen> {
     final results = await _repo.searchRecordings(query.trim());
     if (!mounted) return;
     setState(() => _calls = results);
+  }
+
+  Future<bool> _confirmDelete(CallRecordModel call) async {
+    final result = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Delete Call'),
+        content: Text('Delete this entry for ${call.displayName}?'),
+        actions: [
+          CupertinoDialogAction(child: const Text('Cancel'), onPressed: () => Navigator.pop(ctx, false)),
+          CupertinoDialogAction(isDestructiveAction: true, child: const Text('Delete'), onPressed: () => Navigator.pop(ctx, true)),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
+  Future<void> _deleteCall(CallRecordModel call) async {
+    try {
+      await _repo.delete(call.id);
+    } catch (e) {
+      if (mounted) {
+        await showCupertinoDialog(
+          context: context,
+          builder: (ctx) => CupertinoAlertDialog(
+            title: const Text('Delete Failed'),
+            content: Text(e.toString()),
+            actions: [CupertinoDialogAction(child: const Text('OK'), onPressed: () => Navigator.pop(ctx))],
+          ),
+        );
+      }
+    } finally {
+      _load();
+    }
   }
 
   IconData _iconFor(CallType type) {
@@ -122,28 +164,40 @@ class _CallsListScreenState extends State<CallsListScreen> {
                           ),
                           itemBuilder: (context, index) {
                             final call = _calls[index];
-                            return CupertinoListTile(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                              leading: Icon(_iconFor(call.type), color: _colorFor(call.type), size: 20),
-                              title: Text(
-                                call.displayName,
-                                style: call.type == CallType.missed
-                                    ? AppTypography.body.copyWith(color: AppColors.systemRed)
-                                    : AppTypography.body,
+                            return Dismissible(
+                              key: ValueKey(call.id),
+                              direction: DismissDirection.endToStart,
+                              background: Container(
+                                color: AppColors.systemRed,
+                                alignment: Alignment.centerRight,
+                                padding: const EdgeInsets.symmetric(horizontal: 20),
+                                child: const Icon(CupertinoIcons.delete_solid, color: Colors.white),
                               ),
-                              subtitle: Text(
-                                DateFormat('MMM d, h:mm a').format(call.timestamp),
-                                style: AppTypography.footnote,
+                              confirmDismiss: (_) => _confirmDelete(call),
+                              onDismissed: (_) => _deleteCall(call),
+                              child: CupertinoListTile(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                leading: Icon(_iconFor(call.type), color: _colorFor(call.type), size: 20),
+                                title: Text(
+                                  call.displayName,
+                                  style: call.type == CallType.missed
+                                      ? AppTypography.body.copyWith(color: AppColors.systemRed)
+                                      : AppTypography.body,
+                                ),
+                                subtitle: Text(
+                                  DateFormat('MMM d, h:mm a').format(call.timestamp),
+                                  style: AppTypography.footnote,
+                                ),
+                                trailing: call.hasRecording
+                                    ? const Icon(CupertinoIcons.mic_fill, color: AppColors.systemBlue, size: 18)
+                                    : Text(
+                                        call.durationSeconds > 0
+                                            ? '${call.durationSeconds ~/ 60}:${(call.durationSeconds % 60).toString().padLeft(2, '0')}'
+                                            : '',
+                                        style: AppTypography.footnote,
+                                      ),
+                                onTap: () => _openDetail(call),
                               ),
-                              trailing: call.hasRecording
-                                  ? const Icon(CupertinoIcons.mic_fill, color: AppColors.systemBlue, size: 18)
-                                  : Text(
-                                      call.durationSeconds > 0
-                                          ? '${call.durationSeconds ~/ 60}:${(call.durationSeconds % 60).toString().padLeft(2, '0')}'
-                                          : '',
-                                      style: AppTypography.footnote,
-                                    ),
-                              onTap: () => _openDetail(call),
                             );
                           },
                         ),
@@ -155,11 +209,6 @@ class _CallsListScreenState extends State<CallsListScreen> {
   }
 }
 
-/// =====================================================================
-/// SCREEN: CallDetailScreen
-/// Fix: previously had no Call/Message actions at all, and no way to
-/// save an unknown number as a new contact.
-/// =====================================================================
 class CallDetailScreen extends StatefulWidget {
   final String callId;
   const CallDetailScreen({super.key, required this.callId});
@@ -255,9 +304,7 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
       );
     } else {
       final created = await Navigator.of(context).push<bool>(
-        CupertinoPageRoute(
-          builder: (_) => AddEditContactScreen(prefillPhoneNumber: call.phoneNumber),
-        ),
+        CupertinoPageRoute(builder: (_) => AddEditContactScreen(prefillPhoneNumber: call.phoneNumber)),
       );
       if (created == true) _load();
     }
@@ -343,29 +390,16 @@ class _CallDetailScreenState extends State<CallDetailScreen> {
                         const SizedBox(height: 4),
                         Text(call.phoneNumber, style: AppTypography.subhead),
                         const SizedBox(height: 8),
-                        Text(
-                          DateFormat('MMM d, yyyy • h:mm a').format(call.timestamp),
-                          style: AppTypography.footnote,
-                        ),
+                        Text(DateFormat('MMM d, yyyy • h:mm a').format(call.timestamp), style: AppTypography.footnote),
                       ],
                     ),
                   ),
                   const SizedBox(height: 20),
-                  // Fix: Call/Message actions were completely missing
-                  // from this screen before.
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      _QuickAction(
-                        icon: CupertinoIcons.phone_fill,
-                        label: 'Call',
-                        onTap: () => _launchOrWarn(Uri(scheme: 'tel', path: call.phoneNumber)),
-                      ),
-                      _QuickAction(
-                        icon: CupertinoIcons.chat_bubble_fill,
-                        label: 'Message',
-                        onTap: () => _launchOrWarn(Uri(scheme: 'sms', path: call.phoneNumber)),
-                      ),
+                      _QuickAction(icon: CupertinoIcons.phone_fill, label: 'Call', onTap: () => _launchOrWarn(Uri(scheme: 'tel', path: call.phoneNumber))),
+                      _QuickAction(icon: CupertinoIcons.chat_bubble_fill, label: 'Message', onTap: () => _launchOrWarn(Uri(scheme: 'sms', path: call.phoneNumber))),
                       _QuickAction(
                         icon: call.contactId != null ? CupertinoIcons.person_crop_circle : CupertinoIcons.person_add,
                         label: call.contactId != null ? 'Contact' : 'Add',
@@ -473,15 +507,9 @@ class _RecordingCard extends StatelessWidget {
               CupertinoButton(
                 padding: EdgeInsets.zero,
                 onPressed: onTogglePlay,
-                child: Icon(
-                  isPlaying ? CupertinoIcons.pause_circle_fill : CupertinoIcons.play_circle_fill,
-                  size: 40,
-                  color: AppColors.systemBlue,
-                ),
+                child: Icon(isPlaying ? CupertinoIcons.pause_circle_fill : CupertinoIcons.play_circle_fill, size: 40, color: AppColors.systemBlue),
               ),
-              Expanded(
-                child: Slider(value: positionSeconds, max: maxSeconds, onChanged: onSeek, activeColor: AppColors.systemBlue),
-              ),
+              Expanded(child: Slider(value: positionSeconds, max: maxSeconds, onChanged: onSeek, activeColor: AppColors.systemBlue)),
               Text('${_fmt(position)} / ${_fmt(duration)}', style: AppTypography.footnote),
             ],
           ),
@@ -493,10 +521,7 @@ class _RecordingCard extends StatelessWidget {
               values: trimRange!,
               max: maxSeconds,
               activeColor: AppColors.systemOrange,
-              labels: RangeLabels(
-                _fmt(Duration(seconds: trimRange!.start.round())),
-                _fmt(Duration(seconds: trimRange!.end.round())),
-              ),
+              labels: RangeLabels(_fmt(Duration(seconds: trimRange!.start.round())), _fmt(Duration(seconds: trimRange!.end.round()))),
               onChanged: onTrimRangeChanged,
             ),
           Align(
@@ -510,10 +535,7 @@ class _RecordingCard extends StatelessWidget {
           CupertinoButton(
             padding: const EdgeInsets.symmetric(vertical: 8),
             onPressed: onRename,
-            child: const Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [Icon(CupertinoIcons.pencil, size: 18), SizedBox(width: 6), Text('Rename Recording')],
-            ),
+            child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(CupertinoIcons.pencil, size: 18), SizedBox(width: 6), Text('Rename Recording')]),
           ),
         ],
       ),
